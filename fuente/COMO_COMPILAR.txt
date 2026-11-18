@@ -1,0 +1,75 @@
+﻿ALTARIS 80 - CÓMO ARMAR EL SISTEMA DESDE EL CÓDIGO FUENTE
+======================================================================
+
+No hace falta para instalar ALTARIS 80: los archivos listos (.BIN)
+vienen en la carpeta principal. Esto es para quien quiera cambiar el
+sistema o agregarle programas.
+
+
+LO QUE HACE FALTA
+-----------------
+  - Python 3.
+  - El ensamblador um80 (compatible con MACRO-80 de Microsoft):
+        pip install um80
+    (En Windows: py -m pip install um80.) Probado con las versiones
+    0.3.52 y 0.4.2: las dos dan exactamente los mismos archivos.
+
+
+ARMAR
+-----
+Desde esta carpeta (fuente):
+
+    python tools/build.py
+
+Genera:
+  build/codeflash.bin   la imagen completa de la flash de programa (1 MB)
+  kit/ALTARIS80.BIN     lo mismo, solo hasta la última página usada
+                        (es lo que graba el instalador)
+  kit/INSTALAR.BIN      el instalador que corre en la RAM
+  kit/CABLES.BIN        la prueba de cables
+
+Para instalar lo que se armó: copiar esos .BIN a la carpeta principal
+(reemplazando los que hay) y seguir el MANUAL. Si ALTARIS 80 ya está
+instalado: *ACTUALIZAR en la MailStation e INSTALAR_DIRECTO.BAT, opción 2.
+
+
+QUÉ HAY ACÁ
+-----------
+  src/     el código en ensamblador del Z80 (ver COMO_FUNCIONA.txt,
+           punto 8)
+  tools/   build.py (arma todo), mkromdisk.py (arma el disco de
+           aplicaciones), bbcbasic.py (convierte programas de BASIC de
+           texto a la forma interna), mkerr.py, mkfont.py y mklogo.py
+           (generan los mensajes, las letras y el logo)
+  disk/    los programas del disco de aplicaciones, en texto
+
+
+AGREGAR UN PROGRAMA AL MENÚ
+---------------------------
+  1. Escribir el programa como texto, con o sin números de línea (el
+     formato está en el MANUAL, punto 7), y guardarlo en disk/ como
+     NOMBRE.bas. El nombre puede tener hasta 16 letras.
+  2. En disk/MENU.bas, agregar una línea DATA en la lista del final:
+        DATA "Nombre en el menú","NOMBRE","Descripción de una línea"
+     Los juegos van antes de la línea  DATA "-"  y las utilidades
+     antes de  DATA "*". Entran hasta 11 por columna.
+  3. Armar (python tools/build.py) e instalar.
+
+Los archivos .txt de disk/ también entran al disco de aplicaciones
+(como la ayuda). Al armar se revisan los programas: si hay un error,
+build.py dice en qué archivo y línea.
+
+Para probar un programa no hace falta reinstalar: se manda con
+ENVIAR.BAT al disco interno y se ejecuta con CHAIN "NOMBRE".
+
+
+EL PROGRAMA DEL ARDUINO
+-----------------------
+Está en la carpeta principal, en MS_Link/MS_Link.ino. Se abre y se
+carga con el Arduino IDE (placa "Arduino Uno"). Con arduino-cli, desde
+la carpeta principal:
+
+    arduino-cli compile --fqbn arduino:avr:uno MS_Link
+    arduino-cli upload -p COM3 --fqbn arduino:avr:uno MS_Link
+
+(cambiando COM3 por el puerto que corresponda).

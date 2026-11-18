@@ -1,0 +1,1095 @@
+	TITLE	ALTARIS 80 - NUCLEO (PAGINA 0)
+;
+; Nucleo del sistema ALTARIS 80 para la MailStation (CIDCO / Telefonica).
+; Vive en la pagina 0 de la flash de programa: vectores, arranque,
+; interrupciones, teclado, reloj, llamadas a bancos y copia al LCD.
+;
+; (C) 2026 Altaris Software.
+;
+	.Z80
+	INCLUDE	defs.inc
+;
+	PUBLIC	BANK,LCDCOL,MAPB,RESTB,KEYGET,KEYCHK,FLUSHK
+	PUBLIC	LEDFLASH,POWOFF,RTCRD,RTCWR
+	PUBLIC	INKEYN
+;
+	EXTRN	START		;arranque en frio del BASIC
+	EXTRN	MSINIT		;inicializacion del sistema operativo
+	EXTRN	UPDATE		;modo actualizacion
+;
+	ASEG
+	ORG	0
+	DI
+	JP	BOOT
+;
+	ORG	08H
+	RET
+	ORG	10H
+	RET
+	ORG	18H
+	RET
+	ORG	20H
+	RET
+	ORG	28H
+	RET
+	ORG	30H
+	RET
+;
+	ORG	38H
+	JP	ISR
+;
+	ORG	66H
+	RETN
+;
+	ORG	70H
+	DEFM	'ALTARIS 80 NUCLEO 1.0 (C) 2026 Altaris Software'
+	DEFB	0
+;
+; Tabla fija de servicios del nucleo para los bancos.
+; Las direcciones no cambian entre versiones.
+;
+	ORG	1C0H
+	JP	BANK		;1C0 llamada anidada a otro banco
+	JP	LCDCOL		;1C3 copiar columnas al LCD
+	JP	MAPB		;1C6 mapear ranura B (A=pagina, E=dispositivo)
+	JP	RESTB		;1C9 restaurar ranura B
+	JP	KEYGET		;1CC leer tecla del buffer (CY=hay tecla)
+	JP	KEYCHK		;1CF hay tecla? (NZ=si)
+	JP	FLUSHK		;1D2 vaciar buffer de teclado
+	JP	LEDFLASH	;1D5 destello del LED (A=duracion)
+	JP	POWOFF		;1D8 apagar
+	JP	RTCRD		;1DB leer reloj (HL->7 bytes)
+	JP	RTCWR		;1DE escribir reloj (HL->7 bytes)
+	JP	UPDATE		;1E1 modo actualizacion
+	JP	INKEYN		;1E4 tecla presionada? (A=codigo BBC negado)
+;
+	CSEG
+;
+; ------------------------------------------------------------------
+; RESET - arranque
+; ------------------------------------------------------------------
+;
+BOOT:	DI
+	IM	1
+	LD	SP,BHIMEM	;pila provisoria (la del sistema la usa BANK)
+; Inicializacion de puertos (igual que el firmware original)
+	LD	A,DEVRAM
+	OUT	(PSLBDV),A
+	LD	A,RPMAIN
+	OUT	(PSLBPG),A
+	XOR	A
+	OUT	(PKEYB),A
+	LD	A,SPEED
+	OUT	(PSPEED),A
+	LD	A,80H
+	OUT	(PIRQSP),A
+	LD	A,0FFH
+	OUT	(PDIR2),A
+	LD	A,P2INIT
+	OUT	(PMISC2),A
+	XOR	A
+	OUT	(PIRQ),A
+	LD	A,0FH
+	OUT	(PDIR9),A
+	OUT	(PMISC9),A
+	LD	A,03H
+	OUT	(PDIR28),A
+	XOR	A
+	OUT	(PMISC28),A
+	LD	A,0FFH
+	OUT	(PLPTDIR),A
+	IN	A,(PRTCF)
+	OR	0CH
+	OUT	(PRTCF),A
+; Arranque en caliente? (la RAM conserva la firma)
+	LD	HL,(WARMSG)
+	LD	DE,'A'+256*'L'
+	OR	A
+	SBC	HL,DE
+	LD	B,0
+	JR	NZ,RST1
+	LD	HL,(WARMSG+2)
+	LD	DE,'T'+256*'8'
+	OR	A
+	SBC	HL,DE
+	JR	NZ,RST1
+	INC	B		;B=1 caliente
+; Limpiar variables del sistema (F900-FDFF; BOUNCE no hace falta)
+RST1:	LD	HL,0F900H
+	LD	DE,0F901H
+	LD	BC,06DFH
+	LD	(HL),0
+	LDIR
+	LD	A,B
+	LD	(BOOTFL),A
+	LD	HL,'A'+256*'L'
+	LD	(WARMSG),HL
+	LD	HL,'T'+256*'8'
+	LD	(WARMSG+2),HL
+; Sombras de puertos y ranuras
+	LD	A,P2INIT
+	LD	(SHAD2),A
+	LD	A,0FH
+	LD	(SHAD9),A
+	LD	A,PGCORE
+	LD	(CURAPG),A
+	XOR	A
+	LD	(CURADV),A
+	LD	A,RPMAIN
+	LD	(CURBPG),A
+	LD	A,DEVRAM
+	LD	(CURBDV),A
+	LD	A,64
+	LD	(TPS),A
+	LD	A,1
+	LD	(KCAPS),A	;mayusculas activadas, como en los 80
+	LD	(KBAR),A
+	LD	A,10
+	LD	(TRPCNT),A
+; Tabla de saltos estilo Acorn en FFE0
+	LD	HL,JTAB
+	LD	DE,0FFE0H
+	LD	BC,32
+	LDIR
+; Teclado en reposo
+	LD	A,0FFH
+	OUT	(PKEYB),A
+	LD	HL,KMAT
+	LD	B,20
+RST2:	LD	(HL),0
+	INC	HL
+	DJNZ	RST2
+; Interrupciones del timer
+	LD	A,IRQON
+	LD	(SHAD3),A
+	OUT	(PIRQ),A
+	EI
+; Modo actualizacion: Fn + Volver apretadas al encender
+	LD	B,8
+RSTW:	HALT
+	DJNZ	RSTW
+	LD	A,(KMAT+9)
+	AND	01H		;Fn
+	JR	Z,RST3
+	LD	A,(KMAT+0)
+	AND	02H		;Volver
+	CALL	NZ,UPDATE	;vuelve solo si no encuentra el instalador
+; Sistema operativo y pantalla de arranque
+RST3:	CALL	MSINIT
+; BASIC
+	DI
+	LD	A,PGBASIC
+	LD	(CURAPG),A
+	OUT	(PSLAPG),A
+	XOR	A
+	LD	(CURADV),A
+	OUT	(PSLADV),A
+	EI
+	JP	START
+;
+DELAY50:LD	BC,0
+DLY1:	DEC	BC
+	LD	A,B
+	OR	C
+	JR	NZ,DLY1
+	RET
+;
+JTAB:	JP	JRDCH		;FFE0 OSRDCH
+	DEFS	11,0
+	JP	JWRCH		;FFEE OSWRCH
+	JP	JWORD		;FFF1 OSWORD
+	JP	JBYTE		;FFF4 OSBYTE
+	JP	JCLI		;FFF7 OSCLI
+	DEFS	6,0
+;
+	EXTRN	OSRDCH,OSWRCH,OSWORD,OSBYTE,OSCLI
+JRDCH:	JP	OSRDCH
+JWRCH:	JP	OSWRCH
+JWORD:	JP	OSWORD
+JBYTE:	JP	OSBYTE
+JCLI:	JP	OSCLI
+;
+; ------------------------------------------------------------------
+; BANK - llama a una rutina en un banco de la flash de programa.
+;   Uso:    CALL BANK
+;           DEFB pagina
+;           DEFW direccion
+;   Entra con A,F,BC,DE,HL,IX,IY del llamador y devuelve los del banco.
+;   Cambia a la pila del sistema. Se puede anidar.
+;   Guarda y restaura las ranuras A y B.
+; ------------------------------------------------------------------
+;
+BANK:	LD	(BKHL),HL
+	EX	(SP),HL		;HL -> datos en linea
+	PUSH	AF
+	LD	A,(HL)
+	LD	(BNKPG),A
+	INC	HL
+	LD	A,(HL)
+	LD	(BNKADR),A
+	INC	HL
+	LD	A,(HL)
+	LD	(BNKADR+1),A
+	INC	HL
+	POP	AF
+	EX	(SP),HL		;(SP) = retorno real
+	PUSH	AF
+	POP	HL
+	LD	(BKAF),HL
+	DI
+	LD	A,(INMOS)
+	OR	A
+	JR	NZ,BANK1
+	LD	(SVSP),SP
+	LD	SP,MOSTOP
+BANK1:	INC	A
+	LD	(INMOS),A
+	LD	HL,(CURAPG)	;L=pagina, H=dispositivo
+	PUSH	HL
+	LD	HL,(CURBPG)
+	PUSH	HL
+	LD	A,(BNKPG)
+	LD	(CURAPG),A
+	OUT	(PSLAPG),A
+	XOR	A
+	LD	(CURADV),A
+	OUT	(PSLADV),A
+	LD	HL,BANKRT
+	PUSH	HL
+	LD	HL,(BNKADR)
+	PUSH	HL
+	LD	HL,(BKAF)
+	PUSH	HL
+	POP	AF
+	LD	HL,(BKHL)
+	EI
+	RET			;salta a la rutina del banco
+;
+BANKRT:	LD	(BKHL),HL
+	PUSH	AF
+	POP	HL
+	LD	(BKAF),HL
+	DI
+	POP	HL
+	LD	A,L
+	LD	(CURBPG),A
+	OUT	(PSLBPG),A
+	LD	A,H
+	LD	(CURBDV),A
+	OUT	(PSLBDV),A
+	POP	HL
+	LD	A,L
+	LD	(CURAPG),A
+	OUT	(PSLAPG),A
+	LD	A,H
+	LD	(CURADV),A
+	OUT	(PSLADV),A
+	LD	A,(INMOS)
+	DEC	A
+	LD	(INMOS),A
+	JR	NZ,BANKR2
+	LD	SP,(SVSP)
+BANKR2:	LD	HL,(BKAF)
+	PUSH	HL
+	POP	AF
+	LD	HL,(BKHL)
+	EI
+	RET
+;
+; MAPB - mapea la ranura B.  A = pagina, E = dispositivo.
+; RESTB - restaura la ranura B a la RAM del BASIC.
+; Destruyen: A
+;
+RESTB:	LD	A,RPMAIN
+	LD	E,DEVRAM
+MAPB:	LD	(CURBPG),A
+	OUT	(PSLBPG),A
+	LD	A,E
+	LD	(CURBDV),A
+	OUT	(PSLBDV),A
+	RET
+;
+; ------------------------------------------------------------------
+; LCDCOL - copia una zona de la pantalla virtual (RAM pagina 2) al LCD.
+;   Entrada: B = primera columna de 8 pixeles (0-39, de izquierda a derecha)
+;            C = cantidad de columnas
+;            D = primera fila (0-127), E = cantidad de filas (1-128)
+;   La pantalla virtual guarda cada columna en 128 bytes seguidos
+;   (bit 0 = pixel de la izquierda), igual que el controlador del LCD.
+;   Se llama desde el banco de video. Preserva todos los registros.
+; ------------------------------------------------------------------
+;
+LCDCOL:	PUSH	AF
+	PUSH	BC
+	PUSH	DE
+	PUSH	HL
+	PUSH	IX
+	LD	A,I
+	PUSH	AF		;P/V = interrupciones habilitadas
+	DI
+	LD	(LCROW),DE
+	LD	A,RPVDU
+	OUT	(PSLAPG),A
+	LD	A,DEVRAM
+	OUT	(PSLADV),A
+LCOL1:	LD	A,B
+	LD	D,DEVLCDL
+	CP	20
+	JR	C,LCOL2
+	SUB	20
+	LD	D,DEVLCDR
+LCOL2:	LD	E,A
+	LD	A,19
+	SUB	E
+	LD	E,A		;numero de columna del controlador
+	LD	A,D
+	OUT	(PSLBDV),A
+	LD	A,(SHAD2)
+	AND	0F7H
+	OUT	(PMISC2),A	;CAS bajo
+	LD	A,E
+	LD	(8000H),A	;seleccionar columna
+	LD	A,(SHAD2)
+	OR	08H
+	OUT	(PMISC2),A	;CAS alto
+	PUSH	BC
+	LD	H,0
+	LD	L,B
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL		;*128
+	LD	A,(LCROW+1)	;primera fila
+	LD	E,A
+	LD	D,40H
+	ADD	HL,DE		;origen = 4000H + col*128 + fila
+	LD	D,80H
+	LD	A,E
+	ADD	A,38H
+	LD	E,A
+	JR	NC,LCOL3
+	INC	D
+LCOL3:	LD	A,(LCROW)	;cantidad de filas
+	LD	C,A
+	LD	B,0
+	LDIR
+	POP	BC
+	INC	B
+	DEC	C
+	JR	NZ,LCOL1
+	LD	A,(SHAD2)
+	OUT	(PMISC2),A
+	LD	A,(CURAPG)
+	OUT	(PSLAPG),A
+	LD	A,(CURADV)
+	OUT	(PSLADV),A
+	LD	A,(CURBPG)
+	OUT	(PSLBPG),A
+	LD	A,(CURBDV)
+	OUT	(PSLBDV),A
+	POP	AF
+	JP	PO,LCOL9
+	EI
+LCOL9:	POP	IX
+	POP	HL
+	POP	DE
+	POP	BC
+	POP	AF
+	RET
+;
+; ------------------------------------------------------------------
+; Interrupciones (IM 1)
+; ------------------------------------------------------------------
+;
+ISR:	PUSH	AF
+	PUSH	BC
+	PUSH	DE
+	PUSH	HL
+	IN	A,(PIRQ)
+	LD	B,A
+	BIT	1,B
+	JR	Z,ISR2
+	LD	A,(SHAD3)
+	AND	0FDH
+	OUT	(PIRQ),A	;reconocer timer rapido
+	LD	A,(SHAD3)
+	OUT	(PIRQ),A
+	CALL	TICK
+	JR	ISR9
+ISR2:	LD	A,B
+	AND	0FDH
+	JR	Z,ISR8
+	CPL			;reconocer cualquier otra fuente
+	LD	C,A
+	LD	A,(SHAD3)
+	AND	C
+	OUT	(PIRQ),A
+	LD	A,(SHAD3)
+	OUT	(PIRQ),A
+	JR	ISR9
+ISR8:	CALL	TICK		;el emulador interrumpe sin fuente
+ISR9:	POP	HL
+	POP	DE
+	POP	BC
+	POP	AF
+	EI
+	RETI
+;
+; TICK - tareas de cada interrupcion del timer (64 por segundo)
+;
+TICK:	LD	HL,TICKS
+	INC	(HL)
+	JR	NZ,TCK1
+	INC	HL
+	INC	(HL)
+	JR	NZ,TCK1
+	INC	HL
+	INC	(HL)
+	JR	NZ,TCK1
+	INC	HL
+	INC	(HL)
+; TIME en centesimas: suma 100/TPS por interrupcion
+TCK1:	LD	A,(TPS)
+	LD	C,A
+	LD	A,(TACC)
+	ADD	A,100
+TCK2:	CP	C
+	JR	C,TCK3
+	SUB	C
+	PUSH	AF
+	LD	HL,TIMECS
+	INC	(HL)
+	JR	NZ,TCK4
+	INC	HL
+	INC	(HL)
+	JR	NZ,TCK4
+	INC	HL
+	INC	(HL)
+	JR	NZ,TCK4
+	INC	HL
+	INC	(HL)
+TCK4:	POP	AF
+	JR	TCK2
+TCK3:	LD	(TACC),A
+; LED
+	LD	A,(LEDCNT)
+	OR	A
+	JR	Z,TCK5
+	DEC	A
+	LD	(LEDCNT),A
+	JR	NZ,TCK5
+	LD	A,(SHAD2)
+	AND	0EFH
+	LD	(SHAD2),A
+	OUT	(PMISC2),A
+; Boton de encendido: al apretarlo apaga la pantalla y, cuando se suelta,
+; la maquina (despues de haberlo soltado una vez desde que se prendio)
+TCK5:	IN	A,(PMISC9)
+	BIT	4,A
+	LD	A,(PWRARM)
+	JR	Z,TCK6		;apretado
+	LD	A,1
+	LD	(PWRARM),A
+	JR	TCK7
+TCK6:	OR	A
+	JR	Z,TCK7
+	CALL	POWOFF
+; Teclado
+TCK7:	CALL	KEYSCAN
+	JP	KEYPROC
+;
+; KEYSCAN - lee la matriz de 10 filas a KMAT (1 = tecla apretada)
+;
+KEYSCAN:LD	HL,KMAT
+	LD	C,0FEH		;fila 0
+	LD	B,8
+KSC1:	LD	A,C
+	OUT	(PKEYB),A
+	CALL	KDLY
+	IN	A,(PKEYB)
+	CPL
+	LD	(HL),A
+	INC	HL
+	RLC	C
+	DJNZ	KSC1
+	LD	A,0FFH
+	OUT	(PKEYB),A
+	LD	A,(SHAD2)
+	AND	0FCH
+	OR	02H		;fila 8
+	OUT	(PMISC2),A
+	CALL	KDLY
+	IN	A,(PKEYB)
+	CPL
+	LD	(HL),A
+	INC	HL
+	LD	A,(SHAD2)
+	AND	0FCH
+	OR	01H		;fila 9
+	OUT	(PMISC2),A
+	CALL	KDLY
+	IN	A,(PKEYB)
+	CPL
+	LD	(HL),A
+	LD	A,(SHAD2)
+	OR	03H
+	LD	(SHAD2),A
+	OUT	(PMISC2),A
+	RET
+;
+KDLY:	PUSH	BC
+	LD	B,10
+KDL1:	DJNZ	KDL1
+	POP	BC
+	RET
+;
+; KEYPROC - detecta teclas nuevas y repeticion
+;
+KEYPROC:LD	A,(KMAT+8)
+	AND	01H		;Shift izquierdo
+	LD	B,A
+	LD	A,(KMAT+9)
+	AND	40H		;Shift derecho
+	JR	Z,KP1
+	LD	B,1
+KP1:	LD	A,(KMAT+9)
+	AND	01H		;Fn
+	JR	Z,KP2
+	SET	1,B
+KP2:	LD	A,B
+	LD	(KSHIFT),A
+; Buscar una tecla recien apretada (bits nuevos)
+	LD	HL,KMAT
+	LD	DE,KPREV
+	LD	C,0		;codigo de matriz (fila*8+columna)
+KP3:	LD	A,(DE)
+	CPL
+	AND	(HL)		;apretadas ahora y no antes
+	JR	Z,KP5
+	LD	B,A
+KP4:	SRL	B
+	JR	C,KP6
+	INC	C
+	JR	KP4
+KP5:	LD	A,C
+	ADD	A,8
+	LD	C,A
+	INC	HL
+	INC	DE
+	CP	80
+	JR	C,KP3
+; Ninguna nueva: repeticion de la ultima
+	LD	A,(KLAST)
+	CP	0FFH
+	JR	Z,KP9
+	CALL	ISDOWN
+	JR	Z,KPREL		;ya no esta apretada
+	LD	A,(KRPT)
+	DEC	A
+	LD	(KRPT),A
+	JR	NZ,KP9
+	LD	A,4		;16 por segundo
+	LD	(KRPT),A
+	LD	A,(KCHR)
+	CALL	KPUT
+	JR	KP9
+KPREL:	LD	A,0FFH
+	LD	(KLAST),A
+	JR	KP9
+; Tecla nueva en C
+KP6:	CALL	KTRANS
+	JR	Z,KP9		;modificador o tecla sin uso
+	LD	B,A
+	LD	A,C
+	LD	(KLAST),A
+	LD	A,B
+	LD	(KCHR),A
+	LD	A,32		;medio segundo hasta repetir
+	LD	(KRPT),A
+	LD	A,B
+	CP	KESC
+	JR	Z,KESCP
+	CALL	KPUT
+KP9:	LD	HL,KMAT
+	LD	DE,KPREV
+	LD	BC,10
+	LDIR
+	RET
+KESCP:	LD	A,0FFH
+	LD	(KLAST),A	;ESC no se repite
+	LD	A,(FLAGS)
+	BIT	6,A
+	JR	NZ,KESC2	;ESC desactivado: va al buffer
+	SET	7,A
+	LD	(FLAGS),A
+	CALL	FLUSHK
+	JR	KP9
+KESC2:	LD	A,KESC
+	CALL	KPUT
+	JR	KP9
+;
+; ISDOWN - Z si la tecla A (codigo de matriz) NO esta apretada
+;
+ISDOWN:	PUSH	BC
+	PUSH	HL
+	LD	C,A
+	SRL	A
+	SRL	A
+	SRL	A
+	LD	HL,KMAT
+	ADD	A,L
+	LD	L,A
+	JR	NC,ISD1
+	INC	H
+ISD1:	LD	A,C
+	AND	7
+	LD	B,A
+	LD	A,(HL)
+	INC	B
+ISD2:	RRCA
+	DJNZ	ISD2
+	RLCA			;bit buscado en el bit 0 ... y carry
+	AND	01H
+	POP	HL
+	POP	BC
+	RET
+;
+; KTRANS - traduce codigo de matriz C a caracter en A.
+;   Z si no produce caracter (modificadores, Bloq Mayus).
+;
+KTRANS:	LD	A,C
+	CP	6*8+0		;Bloq Mayusculas
+	JR	NZ,KTR1
+	LD	A,(KCAPS)
+	XOR	1
+	LD	(KCAPS),A
+	XOR	A
+	RET
+KTR1:	LD	A,(KSHIFT)
+	BIT	1,A
+	JR	Z,KTR3
+; Con Fn: acentos y teclas de edicion
+	LD	HL,FNTAB
+KTR2:	LD	A,(HL)
+	OR	A
+	JR	Z,KTR3		;no esta en la tabla: como sin Fn
+	INC	HL
+	CP	C
+	JR	Z,KTRF
+	INC	HL
+	INC	HL
+	JR	KTR2
+KTRF:	LD	A,(KSHIFT)
+	AND	01H
+	JR	Z,KTRF1
+	INC	HL
+KTRF1:	LD	A,(HL)
+	OR	A
+	RET
+KTR3:	LD	B,0
+	LD	HL,KNORM
+	LD	A,(KSHIFT)
+	AND	01H
+	JR	Z,KTR4
+	LD	HL,KSHFT
+KTR4:	ADD	HL,BC
+	LD	A,(HL)
+	OR	A
+	RET	Z
+; Letras: Bloq Mayus invierte mayuscula/minuscula
+	LD	B,A
+	CP	'a'
+	JR	C,KTR5
+	CP	'z'+1
+	JR	NC,KTR5
+	LD	A,(KCAPS)
+	OR	A
+	LD	A,B
+	JR	Z,KTR6
+	AND	0DFH
+	JR	KTR6
+KTR5:	CP	'A'
+	JR	C,KTR7
+	CP	'Z'+1
+	JR	NC,KTR7
+	LD	A,(KCAPS)
+	OR	A
+	LD	A,B
+	JR	Z,KTR6
+	OR	20H
+	JR	KTR6
+KTR7:	LD	A,B
+KTR6:	OR	A
+	RET
+;
+; KPUT - agrega A al buffer de teclado (se descarta si esta lleno)
+;
+KPUT:	PUSH	HL
+	PUSH	BC
+	LD	C,A
+	LD	A,(KBHEAD)
+	LD	B,A
+	INC	A
+	AND	1FH
+	LD	HL,KBTAIL
+	CP	(HL)
+	JR	Z,KPUT9		;lleno
+	LD	(KBHEAD),A
+	LD	HL,KBUF
+	LD	A,B
+	ADD	A,L
+	LD	L,A
+	JR	NC,KPUT1
+	INC	H
+KPUT1:	LD	(HL),C
+KPUT9:	POP	BC
+	POP	HL
+	RET
+;
+; KEYGET - lee una tecla del buffer.
+;   Salida: CY = hay tecla, A = tecla. Destruye A,F
+; KEYCHK - NZ si hay tecla en el buffer. Destruye A,F
+; FLUSHK - vacia el buffer. Destruye A
+;
+KEYGET:	PUSH	HL
+	DI
+	LD	A,(KBTAIL)
+	LD	HL,KBHEAD
+	CP	(HL)
+	JR	Z,KGET9		;vacio, CY=0
+	LD	HL,KBUF
+	ADD	A,L
+	LD	L,A
+	JR	NC,KGET1
+	INC	H
+KGET1:	LD	A,(KBTAIL)
+	INC	A
+	AND	1FH
+	LD	(KBTAIL),A
+	LD	A,(HL)
+	EI
+	POP	HL
+	SCF
+	RET
+KGET9:	EI
+	POP	HL
+	OR	A
+	RET
+;
+KEYCHK:	PUSH	HL
+	LD	A,(KBTAIL)
+	LD	HL,KBHEAD
+	CP	(HL)
+	POP	HL
+	RET
+;
+FLUSHK:	LD	A,(KBHEAD)
+	LD	(KBTAIL),A
+	RET
+;
+; INKEYN - prueba si una tecla esta apretada (INKEY con numero negativo).
+;   Entrada: A = numero de tecla BBC sin el signo (0-127)
+;   Salida:  A = 0FFH si esta apretada, 0 si no
+;
+INKEYN:	PUSH	HL
+	PUSH	BC
+	LD	HL,BBCTAB
+	LD	B,A
+INK1:	LD	A,(HL)
+	CP	0FFH
+	JR	Z,INK8		;no se conoce
+	INC	HL
+	CP	B
+	LD	A,(HL)
+	INC	HL
+	JR	NZ,INK1
+	CALL	ISDOWN
+	JR	Z,INK8
+	LD	A,0FFH
+	JR	INK9
+INK8:	XOR	A
+INK9:	POP	BC
+	POP	HL
+	RET
+;
+; LEDFLASH - enciende el LED de "nuevo correo" por A interrupciones
+;
+LEDFLASH:
+	PUSH	AF
+	DI
+	LD	(LEDCNT),A
+	LD	A,(SHAD2)
+	OR	10H
+	LD	(SHAD2),A
+	OUT	(PMISC2),A
+	EI
+	POP	AF
+	RET
+;
+; POWOFF - apaga la maquina (la RAM se conserva mientras haya pilas)
+;
+POWOFF:	DI
+	LD	A,(SHAD2)
+	AND	7FH		;LCD apagado
+	OUT	(PMISC2),A
+; Esperar a que el boton de encendido quede suelto: mientras esta apretado
+; el mismo boton le da energia a la maquina, que se volveria a prender.
+POWF0:	LD	BC,12000	;unos 50 ms seguidos sin apretar
+POWF2:	IN	A,(PMISC9)
+	BIT	4,A
+	JR	Z,POWF0		;apretado: empezar a contar de nuevo
+	DEC	BC
+	LD	A,B
+	OR	C
+	JR	NZ,POWF2
+; Como el firmware original: pulso de apagado de un segundo
+	LD	A,(SHAD28)
+	OR	01H
+	OUT	(PMISC28),A
+	LD	D,7		;7 x unos 140 ms
+POWF3:	LD	BC,0
+POWF4:	DEC	BC
+	LD	A,B
+	OR	C
+	JR	NZ,POWF4
+	DEC	D
+	JR	NZ,POWF3
+	LD	A,(SHAD28)
+	AND	0FEH
+	OUT	(PMISC28),A
+POWF1:	HALT
+	JR	POWF1
+;
+; RTCRD - lee el reloj.  HL -> 7 bytes: seg, min, hora, dia sem, dia, mes, anio
+;         (valores binarios; anio = anios desde 1980)
+; RTCWR - escribe el reloj desde HL (mismo formato)
+;
+RTCRD:	PUSH	BC
+	PUSH	DE
+	PUSH	HL
+	CALL	RTCMOD		;A = 1 si el reloj cuenta en 24 horas
+	PUSH	AF
+	LD	C,PRTC
+	LD	B,2		;seg, min
+RTR1:	CALL	RTCPAIR
+	DJNZ	RTR1
+	POP	AF
+	OR	A
+	JR	NZ,RTR24
+	IN	A,(C)		;modo de 12 horas: unidades
+	AND	0FH
+	LD	E,A
+	INC	C
+	IN	A,(C)		;bit 0 = decena, bit 1 = PM
+	INC	C
+	LD	D,A
+	AND	1
+	JR	Z,RTR12A
+	LD	A,10
+RTR12A:	ADD	A,E
+	CP	12		;las 12 son las 0
+	JR	NZ,RTR12B
+	XOR	A
+RTR12B:	BIT	1,D
+	JR	Z,RTR12C
+	ADD	A,12
+RTR12C:	LD	(HL),A
+	INC	HL
+	JR	RTR3
+RTR24:	CALL	RTCPAIR
+RTR3:	IN	A,(16H)		;dia de la semana
+	AND	07H
+	LD	(HL),A
+	INC	HL
+	LD	C,17H
+	LD	B,3		;dia, mes, anio
+RTR2:	CALL	RTCPAIR
+	DJNZ	RTR2
+	POP	HL
+	POP	DE
+	POP	BC
+	RET
+;
+; RTCMOD - lee el registro 12/24 del banco 1 del reloj (A = 1: 24 horas)
+RTCMOD:	LD	A,09H		;banco 1, reloj en marcha
+	OUT	(1DH),A
+	IN	A,(1AH)
+	AND	1
+	LD	E,A
+	LD	A,08H		;banco 0, reloj en marcha
+	OUT	(1DH),A
+	LD	A,E
+	RET
+;
+RTCPAIR:IN	A,(C)		;unidades
+	AND	0FH
+	LD	E,A
+	INC	C
+	IN	A,(C)		;decenas
+	AND	0FH
+	INC	C
+	LD	D,A
+	ADD	A,A
+	ADD	A,A
+	ADD	A,D
+	ADD	A,A		;*10
+	ADD	A,E
+	LD	(HL),A
+	INC	HL
+	RET
+;
+RTCWR:	PUSH	BC
+	PUSH	DE
+	PUSH	HL
+	LD	A,09H		;banco 1
+	OUT	(1DH),A
+	LD	A,1		;contar en 24 horas
+	OUT	(1AH),A
+	PUSH	HL
+	LD	DE,6
+	ADD	HL,DE
+	LD	A,(HL)		;anio desde 1980: contador de bisiestos
+	AND	3
+	OUT	(1BH),A
+	POP	HL
+	XOR	A		;banco 0 con el reloj detenido
+	OUT	(1DH),A
+	LD	C,PRTC
+	LD	B,3
+RTW1:	CALL	RTCPUT
+	DJNZ	RTW1
+	LD	A,(HL)
+	INC	HL
+	OUT	(16H),A
+	LD	C,17H
+	LD	B,3
+RTW2:	CALL	RTCPUT
+	DJNZ	RTW2
+	LD	A,08H		;reloj en marcha
+	OUT	(1DH),A
+	POP	HL
+	POP	DE
+	POP	BC
+	RET
+;
+RTCPUT:	LD	A,(HL)
+	INC	HL
+	LD	D,0
+RTP1:	CP	10
+	JR	C,RTP2
+	SUB	10
+	INC	D
+	JR	RTP1
+RTP2:	OUT	(C),A
+	INC	C
+	OUT	(C),D
+	INC	C
+	RET
+;
+; ------------------------------------------------------------------
+; Tablas del teclado (matriz DET1, teclado de Telefonica Equipos)
+; ------------------------------------------------------------------
+;
+KNORM:	DEFB	KMENU,KESC,KCOPY,KF1,KF1+1,KF1+2,KF1+3,KF1+4	;fila 0
+	DEFB	0,0,0,'@',0FCH,0,0,KPGUP			;fila 1
+	DEFB	'`','1','2','3','4','5','6','7'			;fila 2
+	DEFB	'8','9','0','-','=',KDEL,'\',KPGDN		;fila 3
+	DEFB	09H,'q','w','e','r','t','y','u'			;fila 4
+	DEFB	'i','o','p','[',']',';',27H,0DH			;fila 5
+	DEFB	0,'a','s','d','f','g','h','j'			;fila 6
+	DEFB	'k','l',',','.','/',KUP,KDOWN,KRIGHT		;fila 7
+	DEFB	0,'z','x','c','v','b','n','m'			;fila 8
+	DEFB	0,0,0,' ',0,0,0,KLEFT				;fila 9
+;
+KSHFT:	DEFB	KMENU,KESC,KCOPY,KF1,KF1+1,KF1+2,KF1+3,KF1+4
+	DEFB	0,0,0,'@',0DCH,0,0,KPGUP
+	DEFB	'~','!','@','#','$','%','^','&'
+	DEFB	'*','(',')','_','+',KDEL,'|',KPGDN
+	DEFB	09H,'Q','W','E','R','T','Y','U'
+	DEFB	'I','O','P','{','}',':','"',0DH
+	DEFB	0,'A','S','D','F','G','H','J'
+	DEFB	'K','L','<','>','?',KUP,KDOWN,KRIGHT
+	DEFB	0,'Z','X','C','V','B','N','M'
+	DEFB	0,0,0,' ',0,0,0,KLEFT
+;
+; Con Fn: codigo de matriz, caracter sin Shift, con Shift
+FNTAB:	DEFB	6*8+1,0E1H,0C1H		;a  á Á
+	DEFB	4*8+3,0E9H,0C9H		;e  é É
+	DEFB	5*8+0,0EDH,0CDH		;i  í Í
+	DEFB	5*8+1,0F3H,0D3H		;o  ó Ó
+	DEFB	4*8+7,0FAH,0DAH		;u  ú Ú
+	DEFB	8*8+6,0F1H,0D1H		;n  ñ Ñ
+	DEFB	7*8+4,0BFH,0BFH		;/  ¿
+	DEFB	2*8+1,0A1H,0A1H		;1  ¡
+	DEFB	9*8+7,KHOME,KHOME	;Izquierda = Inicio
+	DEFB	7*8+7,KEND,KEND		;Derecha = Fin
+	DEFB	7*8+5,KPGUP,KPGUP	;Arriba = Re Pag
+	DEFB	7*8+6,KPGDN,KPGDN	;Abajo = Av Pag
+	DEFB	0
+;
+; Numeros de tecla BBC (para INKEY negativo) -> codigo de matriz
+BBCTAB:	DEFB	0,8*8+0		;Shift
+	DEFB	1,9*8+0		;Ctrl -> Fn
+	DEFB	112,0*8+1	;Escape -> Volver
+	DEFB	25,9*8+7	;izquierda
+	DEFB	121,7*8+7	;derecha
+	DEFB	57,7*8+5	;arriba
+	DEFB	41,7*8+6	;abajo
+	DEFB	98,9*8+3	;espacio
+	DEFB	73,5*8+7	;Return
+	DEFB	89,3*8+5	;Delete -> Borrar
+	DEFB	96,4*8+0	;Tab
+	DEFB	64,6*8+0	;Caps Lock
+	DEFB	32,0*8+3	;f0 -> F1
+	DEFB	113,0*8+4	;f1 -> F2
+	DEFB	114,0*8+5	;f2 -> F3
+	DEFB	115,0*8+6	;f3 -> F4
+	DEFB	20,0*8+7	;f4 -> F5
+	DEFB	65,6*8+1	;A
+	DEFB	100,8*8+5	;B
+	DEFB	82,8*8+3	;C
+	DEFB	50,6*8+3	;D
+	DEFB	34,4*8+3	;E
+	DEFB	67,6*8+4	;F
+	DEFB	83,6*8+5	;G
+	DEFB	84,6*8+6	;H
+	DEFB	37,5*8+0	;I
+	DEFB	69,6*8+7	;J
+	DEFB	70,7*8+0	;K
+	DEFB	86,7*8+1	;L
+	DEFB	101,8*8+7	;M
+	DEFB	85,8*8+6	;N
+	DEFB	54,5*8+1	;O
+	DEFB	55,5*8+2	;P
+	DEFB	16,4*8+1	;Q
+	DEFB	51,4*8+4	;R
+	DEFB	81,6*8+2	;S
+	DEFB	35,4*8+5	;T
+	DEFB	53,4*8+7	;U
+	DEFB	99,8*8+4	;V
+	DEFB	33,4*8+2	;W
+	DEFB	66,8*8+2	;X
+	DEFB	68,4*8+6	;Y
+	DEFB	97,8*8+1	;Z
+	DEFB	39,3*8+2	;0
+	DEFB	48,2*8+1	;1
+	DEFB	49,2*8+2	;2
+	DEFB	17,2*8+3	;3
+	DEFB	18,2*8+4	;4
+	DEFB	19,2*8+5	;5
+	DEFB	52,2*8+6	;6
+	DEFB	36,2*8+7	;7
+	DEFB	21,3*8+0	;8
+	DEFB	38,3*8+1	;9
+	DEFB	104,7*8+3	;punto
+	DEFB	102,7*8+2	;coma
+	DEFB	72,5*8+5	;punto y coma
+	DEFB	79,5*8+6	;apostrofo -> comilla
+	DEFB	104,7*8+3
+	DEFB	0FFH
+;
+;
+	END

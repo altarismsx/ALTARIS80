@@ -1,0 +1,371 @@
+﻿ALTARIS 80 - MANUAL DEL KIT
+Para la MailStation de Telefónica Equipos (CIDCO DET1, firmware 1.03)
+Carlos de la Fuente - Altaris Software, 2026
+======================================================================
+
+ALTARIS 80 convierte la MailStation en una computadora personal de los
+años ochenta: al prenderla muestra el logo, cuenta la memoria y queda
+lista con un BASIC que graba y carga programas en un disco interno.
+Trae 18 juegos y utilidades en un disco de aplicaciones.
+
+La instalación se hace sin abrir la máquina y sin soldar: por el
+conector de la impresora, con un Arduino Uno y la PC. Con INSTALAR.BAT,
+antes de grabar se copia todo el contenido original a la PC y se puede
+volver atrás. Con INSTALAR_DIRECTO.BAT no se copia nada: el firmware
+original se pierde.
+
+
+CONTENIDO DEL KIT
+-----------------
+  LEEME_PRIMERO.txt   qué es y por dónde empezar
+  MANUAL.txt          este manual
+  COMO_FUNCIONA.txt   explicación técnica (para curiosos y docentes)
+  CABLEADO.png        dibujo del cableado DB25 - Arduino
+  imagenes/           fotos y pantallas de ALTARIS 80
+  INSTALAR.BAT        instala ALTARIS 80 guardando antes el original (paso 5)
+  INSTALAR_DIRECTO.BAT instala ALTARIS 80 sin respaldo (paso 5)
+  ENVIAR.BAT          manda un archivo a la MailStation (arrastrarlo encima)
+  RECIBIR.BAT         trae un archivo de la MailStation a la PC
+  RESPALDO.BAT        solo copia la memoria de la MailStation a la PC
+  RESTAURAR.BAT       vuelve a grabar un respaldo (arrastrarlo encima)
+  PROBAR_CABLES.BAT   prueba los 11 cables, uno por uno
+  ALTARIS80.BIN       el sistema completo (lo usa INSTALAR.BAT)
+  INSTALAR.BIN        el instalador que corre en la MailStation
+  CABLES.BIN          la prueba de cables (la usa PROBAR_CABLES.BAT)
+  MS_Link/            programa para el Arduino (MS_Link.ino y ya
+                      compilado, MS_Link_uno.hex)
+  pc/                 programa de la PC (altaris_pc.py y sus módulos)
+  programas/          los programas del disco de aplicaciones, en texto,
+                      para leerlos, cambiarlos y mandarlos
+  fuente/             código fuente completo de ALTARIS 80
+  LICENCIAS.txt       créditos y licencias
+
+
+LO QUE HACE FALTA
+-----------------
+  - La MailStation con su fuente de alimentación y, si es posible,
+    las pilas puestas: si se corta la luz mientras se graba, siguen las
+    pilas. Una grabación cortada por falta de energía puede dejar la
+    máquina sin arrancar.
+  - Un Arduino Uno (o Nano) con su cable USB.
+  - Un conector DB25 macho (el de la MailStation es hembra). Para no
+    soldar: una "bornera DB25 macho" (conector con tornillos) y 11
+    cables dupont macho-macho. También sirve un cable de impresora viejo
+    cortado.
+  - Una PC con Windows (también funciona en Linux o Mac: ver paso 4).
+
+
+1. CARGAR EL "LOADER" EN LA MAILSTATION (una sola vez)
+------------------------------------------------------
+El Loader es un programa chiquito (97 bytes) que se tipea a mano con el
+editor hexadecimal escondido de la MailStation. Sirve para recibir el
+instalador por el cable. Hay que tipearlo con cuidado: con un solo byte
+mal no funciona. Conviene revisarlo dos veces antes de guardar.
+
+A. Entrar al editor
+  1. Con la MailStation apagada, mantener Fn + Shift + T y prender.
+     Aparece el menú de diagnóstico.
+  2. Shift + F5 (F5 es la tecla gris de más a la derecha, debajo de la
+     pantalla): se abre el editor hexadecimal.
+  3. G, escribir 710304, apretar X (no se ve) y Enter. Esto permite
+     escribir.
+
+B. Tipear el Loader
+  4. G, escribir 000000 y Enter.
+  5. S para editar. Con las flechas, escribir estos bytes en orden
+     (16 por fila; el número de la izquierda es la dirección, no se
+     escribe):
+
+     000000  C3 3B 40 1A 40 0E 40 09 40 00 00 00 00 00 01 00
+     000010  06 00 06 00 4C 6F 61 64 65 72 00 00 08 00 00 00
+     000020  0B 00 00 00 00 00 00 00 C5 E5 AF D3 08 3C D3 07
+     000030  CD 27 80 B7 CA 30 40 7D E1 C1 C9 CD 28 40 6F CD
+     000040  28 40 67 01 00 80 CD 28 40 57 3E 01 D3 08 D3 07
+     000050  7A 02 03 2B AF B4 C2 46 40 AF B5 C2 46 40 C3 00
+     000060  80
+
+  6. S para guardar. Los cambios se pierden si se sale de la pantalla
+     sin guardar: si no se ven todas las filas juntas, guardar con S,
+     ir con G a la primera fila que falta (por ejemplo 000050) y seguir.
+
+C. Anotar la aplicación
+  7. G, escribir 020000 y Enter.
+  8. S y escribir:
+
+     020000  01 00 00 00 00 00 00 00 00 17 00 01 00 00 00 18
+     020010  00 02 00 00 00 19 00 03 00 00 00 1A 00 04 00 00
+     020020  00 1B
+
+     El primer 01 dice que hay una aplicación; el 17 es su número.
+  9. S para guardar.
+
+D. Salir
+ 10. Volver, Q, y elegir "No borrar".
+
+Para probarlo: Aplicaciones (puede estar en la segunda página),
+Loader. La pantalla queda quieta: está esperando a la PC. Para salir:
+botón RESET de atrás y elegir "No borrar".
+
+El número 17: el firmware 1.03 de Telefónica numera las aplicaciones
+uno menos que el de las MailStation de EE.UU. Con 18 el menú muestra
+"Loader", pero no lo abre y la máquina se cuelga. Si ya se había
+tipeado con 18, alcanza con cambiar ese byte (el décimo de la fila
+020000) por 17. En una MailStation de EE.UU. (firmware 3.x) van 18, 19,
+1A, 1B y 1C; ALTARIS 80 se probó solo con la de Telefónica 1.03.
+
+Si la fila 020000 no estaba toda en 00, la máquina ya tenía otras
+aplicaciones: estos pasos las reemplazan por el Loader.
+
+Los bytes del Loader salen de loader.asm de joshua stein, basado en el
+de FyberOptic (ver LICENCIAS.txt).
+
+
+2. ARMAR EL ADAPTADOR
+---------------------
+Los números de pin vienen marcados en el conector DB25. En el Arduino
+están marcados en la placa (DIGITAL 2 a 11 y GND).
+
+  Arduino   DB25 de la MailStation
+  -------   ----------------------
+  D2   <--  pin 2
+  D3   <--  pin 3
+  D4   <--  pin 4
+  D5   <--  pin 5
+  D6   <--  pin 6
+  D7   -->  pin 10
+  D8   -->  pin 11
+  D9   -->  pin 12
+  D10  -->  pin 13
+  D11  -->  pin 15
+  GND  ---  pin 25
+
+Son 11 cables. Todos los demás pines del DB25 (1, 7, 8, 9, 14 y del 16
+al 24) NO se conectan. El dibujo CABLEADO.png muestra lo mismo.
+
+Recomendado: una resistencia de 470 ohm en serie en cada uno de los 10
+cables de datos, como protección. No cambia el funcionamiento.
+
+Para comprobar el adaptador terminado está la prueba de cables
+(PROBAR_CABLES.BAT, en el paso 10): dice cable por cable si anda.
+
+
+3. CARGAR EL PROGRAMA DEL ARDUINO (una sola vez)
+------------------------------------------------
+  1. Abrir MS_Link\MS_Link.ino con el Arduino IDE.
+  2. Placa: "Arduino Uno". (Con un Nano: placa "Arduino Nano"; si da
+     error al cargar, Procesador "ATmega328P (Old Bootloader)".)
+  3. Subir. (Ya compilado está en MS_Link_uno.hex, para quien use
+     avrdude.) Para probarlo: Monitor Serie a 115200, escribir P y Enviar:
+     tiene que contestar  MSLINK OK 4
+  4. Cerrar el Monitor Serie (si queda abierto, la PC no puede usar el
+     puerto).
+
+
+4. PREPARAR LA PC (una sola vez)
+--------------------------------
+  1. Instalar Python 3 desde python.org (en el instalador marcar
+     "Add python.exe to PATH").
+  2. Abrir una ventana de comandos (tecla Windows, escribir cmd) y
+     escribir:
+         py -m pip install pyserial
+
+En Linux o Mac: instalar pyserial con  python3 -m pip install pyserial
+y, en lugar de los .BAT, usar desde la carpeta del kit:
+    python3 pc/altaris_pc.py directo      (o instalar, cables, enviar
+                                            ARCHIVO, recibir NOMBRE)
+Con  python3 pc/altaris_pc.py  solo, muestra todas las órdenes.
+
+El programa busca solo el puerto del Arduino. Si hay más de uno, lo
+dice y muestra la lista: entonces se agrega el puerto al final del
+comando, por ejemplo  INSTALAR COM5  desde una ventana de comandos
+abierta en la carpeta del kit.
+
+
+5. INSTALAR ALTARIS 80
+----------------------
+Tarda unos minutos. Durante la grabación no hay que apagar ni
+desconectar nada.
+
+  1. Conectar la fuente a la MailStation, el DB25 al conector de atrás
+     y el Arduino a la PC.
+  2. En la PC, doble clic en INSTALAR.BAT, o en INSTALAR_DIRECTO.BAT
+     para no guardar el firmware original (se saltea la copia a la PC
+     del punto 6 y el original se pierde para siempre).
+  3. Recién ahora, en la MailStation, abrir Loader (Aplicaciones,
+     segunda página, elegir Loader y Enter). La pantalla NO cambia:
+     sigue mostrando el ícono de Loader. Así está bien.
+  4. En la PC, apretar solo Enter. (El 2 es únicamente para cuando la
+     pantalla ya dice "ALTARIS 80 - INSTALADOR".)
+  5. Se manda el instalador. En la MailStation aparece
+     "ALTARIS 80 - INSTALADOR" y "ESPERANDO A LA PC...".
+  6. La PC lee sola, por el cable, qué memoria tiene la MailStation
+     (no hay que abrir nada ni mirar ningún chip) y lo muestra, por
+     ejemplo "Memoria de programa: AMD, chip D5". Si no es la esperada,
+     se frena sin cambiar nada.
+     Con INSTALAR.BAT, además se copia todo a la PC: la memoria de
+     programa (1 MB) y la de datos (512 KB). Queda en el archivo
+     respaldo_mailstation_AAAAMMDD_HHMM.bin  en la carpeta del kit.
+     GUARDALO BIEN: es lo único que permite volver al firmware original.
+  7. Pide confirmación: escribir SI y Enter. Se borra el firmware y se
+     graba ALTARIS 80, comprobando cada página.
+  8. La MailStation se reinicia sola y arranca ALTARIS 80. La primera
+     vez prepara el disco interno ("recién formateado").
+
+Si algo se corta después de que apareció "ALTARIS 80 - INSTALADOR", la
+MailStation sigue esperando órdenes mientras no se apague: se vuelve a
+ejecutar el mismo .BAT y a la primera pregunta se escribe 2 y Enter. Si
+se corta antes, mientras se manda el instalador: botón RESET, "No
+borrar", abrir Loader y empezar de nuevo.
+
+Si aparece "La MailStation no contestó: el instalador no está cargado",
+se escribió 2 con el Loader abierto: botón RESET, "No borrar", abrir
+Loader y volver a empezar apretando solo Enter.
+
+
+6. USO
+------
+Al prender aparecen el logo y el conteo de memoria, y queda el BASIC
+listo (el signo >).
+
+  Tecla Menú      abre el menú de juegos y utilidades
+  Flechas, Enter  elegir y ejecutar
+  Volver          sale del programa (o interrumpe uno de BASIC)
+  F1 a F5         LIST, RUN, LOAD", SAVE", *CAT (barra de abajo)
+  *APAGAR         apaga (o el botón de encendido: al apretarlo se apaga
+                  la pantalla y al soltarlo, la máquina)
+
+El BASIC tiene números de línea, como el del MSX, y además PROC, FN,
+REPEAT, WHILE, CASE e IF de varias líneas. AUTO, RENUMBER, DELETE y
+EDIT ayudan a escribir. Los programas se graban con SAVE "NOMBRE" y se
+cargan con LOAD "NOMBRE" o CHAIN "NOMBRE". La utilidad Ayuda del menú
+tiene la guía completa; *AYUDA lista los comandos del sistema.
+
+Hay dos discos: el tuyo (unos 500 KB en la memoria de datos, se
+conserva aunque se apague) y el de aplicaciones (solo lectura). *CAT muestra los
+dos. Para modificar un programa del disco de aplicaciones, copialo al
+tuyo con *COPIAR o con la utilidad Archivos.
+
+
+7. PASAR ARCHIVOS ENTRE LA PC Y LA MAILSTATION
+----------------------------------------------
+De la PC a la MailStation:
+  1. Arrastrar el archivo (.bas o .txt) encima de ENVIAR.BAT.
+  2. En la MailStation escribir  *RECIBIR NOMBRE  (el nombre que
+     indica la PC; para un .txt, con la extensión: *RECIBIR NOTA.TXT).
+
+De la MailStation a la PC:
+  1. Doble clic en RECIBIR.BAT y escribir el nombre del archivo.
+  2. En la MailStation escribir  *ENVIAR NOMBRE
+  El archivo queda en la carpeta "recibidos". Los programas de BASIC
+  llegan como texto (.bas) que se abre con el Bloc de notas.
+
+En la MailStation, Volver cancela la transferencia. La utilidad
+Archivos también envía con F5.
+
+Los programas de BASIC se escriben en la PC como texto, con o sin
+números de línea. Sin números se numeran solos (10, 20, ...); para
+saltar a una línea se le pone una etiqueta entre llaves al principio,
+{bucle}, y se usa  GOTO {bucle}. Las líneas que empiezan con # son
+comentarios que no se mandan. Así están escritos los de la carpeta
+"programas": se pueden cambiar y mandar con ENVIAR.BAT. Los acentos y
+la ñ pasan bien en los dos sentidos. Los nombres tienen hasta 16 letras.
+
+
+8. VOLVER A INSTALAR O ACTUALIZAR ALTARIS 80
+--------------------------------------------
+No hace falta el Loader: el instalador está en el disco de aplicaciones.
+
+  1. En la MailStation, escribir  *ACTUALIZAR  y contestar S.
+     (Si ALTARIS no arranca: mantener Fn + Volver apretadas y prender.)
+  2. Aparece "ALTARIS 80 - INSTALADOR".
+  3. Doble clic en INSTALAR_DIRECTO.BAT (o INSTALAR.BAT) y a la primera
+     pregunta escribir 2 y Enter.
+
+Tu disco no se borra al actualizar. Igual conviene pasar a la PC los
+archivos importantes antes.
+
+
+9. VOLVER AL FIRMWARE ORIGINAL
+------------------------------
+  1. En la MailStation, *ACTUALIZAR y S (o Fn + Volver al prender).
+  2. Arrastrar el archivo respaldo_mailstation_....bin encima de
+     RESTAURAR.BAT, escribir 2 y Enter, y después SI.
+  3. Primero se hace un respaldo nuevo (por las dudas) y después se
+     graban las dos memorias como estaban. La MailStation arranca con el
+     firmware de Telefónica, con el Loader y todo lo que tenía.
+
+Con RESPALDO.BAT se hace solo la copia, sin cambiar nada.
+
+
+10. SI ALGO SALE MAL
+--------------------
+"Falta pyserial"
+    Paso 4.
+"El adaptador en COMx no responde"
+    Falta cargar MS_Link.ino (paso 3), o el Monitor Serie del Arduino
+    IDE está abierto.
+"No pude elegir el puerto solo"
+    Agregar el puerto al final del comando (paso 4).
+"La MailStation no responde" al mandar el instalador
+    Revisar los cables (sobre todo GND - pin 25). Botón RESET atrás,
+    "No borrar", abrir Loader de nuevo y repetir.
+"La MailStation no manda datos" o "no contestó: el instalador no está
+cargado"
+    Se escribió 2 con el Loader abierto (la pantalla del Loader no
+    cambia: el 2 es solo si dice "ALTARIS 80 - INSTALADOR"). Botón
+    RESET atrás, "No borrar", abrir Loader y repetir apretando solo
+    Enter.
+"El instalador llegó a la MailStation, pero su respuesta no llega"
+    Falla algún cable de vuelta. Botón RESET atrás, "No borrar", y
+    hacer la prueba de cables (abajo).
+"No conozco ese chip de memoria"
+    La memoria no es la esperada. No se cambió nada: botón RESET.
+    Anotar el código que mostró la PC ("chip XX") para revisarlo.
+Se cortó la grabación (cable, PC, Arduino)
+    No apagar la MailStation: sigue esperando. Volver a ejecutar el
+    mismo comando y a la primera pregunta escribir 2 y Enter.
+Se apagó la MailStation durante la grabación
+    Probar Fn + Volver al prender (paso 8). Si no aparece el
+    instalador, la memoria de programa quedó incompleta y solo se puede
+    recuperar con un grabador de memorias externo. Por eso conviene la
+    fuente conectada y las pilas puestas.
+*RECIBIR o *ENVIAR dicen "Error de transmisión"
+    La PC no respondió en 2 minutos o se cortó la conexión. Ejecutar
+    el BAT y escribir el comando en la MailStation enseguida, y revisar
+    los cables.
+Un programa de la PC da error al mandarlo
+    El mensaje dice la línea: suele ser un número de línea repetido o
+    una etiqueta {nombre} que no existe.
+
+PRUEBA DE CABLES
+    1. Doble clic en PROBAR_CABLES.BAT.
+    2. En la MailStation abrir Loader (Aplicaciones, segunda página,
+       Loader y Enter) y en la PC apretar Enter.
+    3. En la MailStation aparece "ALTARIS 80 - PRUEBA DE CABLES" y la
+       PC dice, cable por cable, BIEN o MAL, y cuál revisar.
+    4. Para salir: botón RESET atrás, "No borrar".
+    Necesita el MS_Link nuevo en el Arduino (versión 4).
+
+
+11. DATOS TÉCNICOS
+------------------
+  Procesador        Z80 a 12 MHz
+  Memoria           128 KB de RAM; 1 MB de memoria de programa
+                    (Am29F080); 512 KB de memoria de datos (28SF040)
+  Pantalla          320 x 128 puntos, 64 columnas x 16 filas de texto
+                    (MODE 0) o 40 columnas (MODE 1)
+  BASIC             Altaris BASIC 1.0, basado en BBC BASIC (Z80) v5 de
+                    R. T. Russell; unos 30 KB libres para programas
+  Disco interno     unos 500 KB en la memoria de datos, hasta 128
+                    archivos
+  Disco de aplic.   en la memoria de programa, solo lectura
+  Enlace con la PC  puerto paralelo, 3 bits por vez, con MS_Link
+
+El código fuente está en la carpeta "fuente". Cómo armar el sistema,
+cambiarlo o agregarle programas: fuente/COMO_COMPILAR.txt.
+
+
+Créditos: BBC BASIC (Z80) de R. T. Russell (licencia zlib); fuente de
+letras Spleen de Frederic Cambus (licencia BSD); protocolo y adaptador
+basados en las herramientas de joshua stein (licencia ISC). Los textos
+completos están en LICENCIAS.txt. Altaris Software, 2026.

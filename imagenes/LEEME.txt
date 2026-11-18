@@ -1,0 +1,21 @@
+﻿IMÁGENES DE ALTARIS 80
+======================
+
+Fotos de la máquina real (la MailStation de Telefónica Equipos):
+  antes_1_pantalla_original.jpg       con el firmware original
+  antes_2_conector_de_atras.jpg       el conector DB25 de impresora
+                                      (a la derecha), RESET y la
+                                      entrada de la fuente
+  antes_3_etiqueta_telefonica.jpg     la etiqueta de abajo
+  despues_altaris80_en_la_maquina.jpg con ALTARIS 80 instalado
+
+Pantallas de ALTARIS 80 (tomadas del emulador, en la máquina se ven
+igual):
+  pantalla_1_arranque.png    logo y prueba de memoria al prender
+  pantalla_2_basic.png       el BASIC listo
+  pantalla_3_disco.png       *CAT: el disco interno y el de aplicaciones
+  pantalla_4_menu.png        el menú de juegos y utilidades
+  pantalla_5_pulsenoid.png   Pulsenoid
+  pantalla_6_che_fenix.png   Che Fénix
+  pantalla_7_tateti3d.png    Tateti 3D
+  pantalla_8_ahorcado.png    Ahorcado

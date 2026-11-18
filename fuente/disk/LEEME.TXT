@@ -1,0 +1,43 @@
+ALTARIS 80 - una computadora de los años ochenta
+Altaris Software (C) 2026
+
+Esta MailStation ya no es un terminal de correo: arranca en
+ALTARIS 80, un sistema con BASIC, disco y aplicaciones.
+
+AL ENCENDER
+  Aparece el logo, se cuenta la memoria y queda listo el BASIC.
+  La tecla Menú abre el menú de aplicaciones: con las flechas
+  elegís un programa y con Enter lo ejecutás. Volver sale al
+  BASIC.
+
+JUEGOS
+  Tateti 3D, Pulsenoid, Che Fénix, Rocket Car, Viborita,
+  Bloques, Buscaminas y Ahorcado.
+
+UTILIDADES
+  Reloj (con cronómetro), Calendario (con feriados),
+  Calculadora, Notas (editor de textos), Agenda (con aviso
+  de cumpleaños), Dibujo, Gráficos (funciones matemáticas),
+  Demos, Ayuda y Archivos.
+
+TU DISCO
+  Todo lo que grabás queda en el disco interno, aunque se
+  apague la máquina. Los juegos y utilidades están en un
+  disco aparte, de solo lectura: si querés modificar uno,
+  copialo a tu disco con Archivos (F2) o con *COPIAR.
+
+EL BASIC
+  Es un BASIC con números de línea, como el del MSX, con
+  procedimientos, funciones, REPEAT, WHILE, CASE y gráficos.
+  La utilidad Ayuda tiene la guía completa; *AYUDA lista los
+  comandos del sistema.
+
+  Probá:
+    10 MODE 1
+    20 FOR R%=4 TO 60 STEP 4
+    30 CIRCLE 160,64,R%
+    40 NEXT
+    RUN
+
+PARA APAGAR
+  Escribí *APAGAR o apretá el botón de encendido.

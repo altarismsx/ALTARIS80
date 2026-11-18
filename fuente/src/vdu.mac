@@ -1,0 +1,3175 @@
+	TITLE	ALTARIS 80 - VIDEO (BANCO 5)
+;
+; Controlador de pantalla: texto 64x16 (MODE 0) o 40x16 (MODE 1),
+; graficos de 320x128 puntos, caracteres definibles, ventanas y
+; codigos VDU compatibles con los de las maquinas Acorn.
+;
+; Corre en la ranura A (4000H). Sus datos estan en la RAM pagina 2,
+; que se mapea en la ranura B (8000H) al entrar.
+;
+; (C) 2026 Altaris Software.
+;
+	.Z80
+	INCLUDE	defs.inc
+;
+; Servicios del nucleo (tabla fija)
+NBANK	EQU	01C0H
+NLCD	EQU	01C3H
+NMAPB	EQU	01C6H
+NLED	EQU	01D5H
+;
+; RAM pagina 2
+FB	EQU	8000H		;pantalla virtual: 40 columnas x 128 filas
+UFONT	EQU	9400H		;fuente en RAM: 256 x 8 (bit 0 = izquierda)
+CHMAP	EQU	9C00H		;caracteres en pantalla: 16 filas x 64
+VS	EQU	0A000H		;estado
+;
+VMODE	EQU	VS+0		;modo (0 o 1)
+CW	EQU	VS+1		;ancho del caracter en puntos (5 u 8)
+NCOLS	EQU	VS+2		;columnas (64 o 40)
+TX	EQU	VS+3		;cursor de texto (absoluto)
+TY	EQU	VS+4
+TWL	EQU	VS+5		;ventana de texto
+TWB	EQU	VS+6
+TWR	EQU	VS+7
+TWT	EQU	VS+8
+TFG	EQU	VS+9		;color del texto (0/1)
+TBG	EQU	VS+10		;fondo del texto (0/1)
+GFG	EQU	VS+11		;color grafico
+GFGM	EQU	VS+12		;modo grafico (GCOL)
+GBG	EQU	VS+13
+GBGM	EQU	VS+14
+VDU5F	EQU	VS+15		;texto en el cursor grafico
+CSREN	EQU	VS+16		;cursor habilitado
+QLEN	EQU	VS+17		;bytes que faltan del comando VDU
+QCMD	EQU	VS+18
+QPOS	EQU	VS+19
+VDISAB	EQU	VS+20		;VDU 21
+CSRDRN	EQU	VS+21		;cursor dibujado
+PEND	EQU	VS+22		;salto de linea pendiente (despues de la ultima columna)
+QBUF	EQU	VS+24		;parametros (hasta 9)
+GWL	EQU	VS+34		;ventana grafica (16 bits c/u)
+GWB	EQU	VS+36
+GWR	EQU	VS+38
+GWT	EQU	VS+40
+ORGX	EQU	VS+42		;origen
+ORGY	EQU	VS+44
+GX	EQU	VS+46		;cursor grafico actual
+GY	EQU	VS+48
+OGX	EQU	VS+50		;anterior
+OGY	EQU	VS+52
+OOGX	EQU	VS+54		;el de antes del anterior
+OOGY	EQU	VS+56
+PACT	EQU	VS+58		;accion de dibujo: 0 nada,1 poner,2 borrar,3 invertir
+BBX0	EQU	VS+60		;zona modificada (puntos de pantalla)
+BBX1	EQU	VS+62
+BBY0	EQU	VS+64
+BBY1	EQU	VS+65
+LX0	EQU	VS+66		;variables de lineas y figuras
+LY0	EQU	VS+68
+LX1	EQU	VS+70
+LY1	EQU	VS+72
+LDX	EQU	VS+74
+LDY	EQU	VS+76
+LSX	EQU	VS+78
+LSY	EQU	VS+80
+LERR	EQU	VS+82
+LE2	EQU	VS+84
+CXX	EQU	VS+86
+CYY	EQU	VS+88
+CRAD	EQU	VS+90
+CDD	EQU	VS+92
+TRX	EQU	VS+94		;triangulo: 3 vertices ordenados
+TRY	EQU	VS+106
+SPY	EQU	VS+118
+SPX0	EQU	VS+120
+SPX1	EQU	VS+122
+TMPW	EQU	VS+124
+DSAVE	EQU	VS+126
+GOFF	EQU	VS+128		;dibujo de caracteres: desplazamiento
+GCOL	EQU	VS+129		;columna
+GMASK	EQU	VS+130		;mascara del ancho
+GROW	EQU	VS+131		;fila
+GSHFT	EQU	VS+132		;correr un punto (modo 1)
+UFLAG	EQU	VS+160		;32 bytes: caracteres de 8 puntos de ancho
+FSY	EQU	VS+133		;fila de FSPAN
+SVWIN	EQU	VS+134		;ventana guardada (4 bytes)
+SVROWS	EQU	VS+138		;filas de puntos a mover
+;
+	ASEG
+	ORG	4000H
+;
+	JP	VINIT		;4000
+	JP	VWRCH		;4003
+	JP	VCSRON		;4006
+	JP	VCSROFF		;4009
+	JP	VWORD		;400C
+	JP	VBYTE		;400F
+	JP	VKBAR		;4012
+	JP	VSTATE		;4015
+	RET			;4018 reservado
+	NOP
+	NOP
+;
+; MAPV - mapea la RAM del video en la ranura B
+MAPV:	PUSH	DE
+	LD	A,RPVDU
+	LD	E,DEVRAM
+	CALL	NMAPB
+	POP	DE
+	RET
+;
+; ------------------------------------------------------------------
+; VINIT - inicializa el video. A = modo
+; ------------------------------------------------------------------
+;
+VINIT:	PUSH	AF
+	CALL	MAPV
+	LD	HL,ROMFNT	;copiar la fuente a la RAM
+	LD	DE,UFONT
+	LD	BC,2048
+	LDIR
+	LD	HL,FWIDE	;marcas de caracteres anchos
+	LD	DE,UFLAG
+	LD	BC,32
+	LDIR
+	XOR	A
+	LD	(QLEN),A
+	LD	(VDISAB),A
+	LD	(CSRDRN),A
+	POP	AF
+	JP	SETMODE
+;
+; ------------------------------------------------------------------
+; VWRCH - escribe un caracter o codigo VDU (A)
+; ------------------------------------------------------------------
+;
+VWRCH:	LD	C,A
+	CALL	MAPV
+	LD	A,(QLEN)
+	OR	A
+	JR	NZ,QADD
+	LD	A,(VDISAB)
+	OR	A
+	JR	Z,VW1
+	LD	A,C
+	CP	6
+	RET	NZ
+	XOR	A
+	LD	(VDISAB),A
+	RET
+VW1:	LD	A,C
+	CP	20H
+	JR	C,VCTRL
+	CP	7FH
+	JP	Z,VDEL
+	JP	PUTCH
+;
+VCTRL:	LD	HL,PCNT		;cantidad de parametros
+	LD	E,A
+	LD	D,0
+	ADD	HL,DE
+	LD	A,(HL)
+	OR	A
+	JR	Z,VEXEC
+	LD	(QLEN),A
+	LD	A,C
+	LD	(QCMD),A
+	XOR	A
+	LD	(QPOS),A
+	RET
+;
+QADD:	LD	A,(QPOS)
+	LD	E,A
+	LD	D,0
+	LD	HL,QBUF
+	ADD	HL,DE
+	LD	(HL),C
+	INC	A
+	LD	(QPOS),A
+	LD	A,(QLEN)
+	DEC	A
+	LD	(QLEN),A
+	RET	NZ
+	LD	A,(QCMD)
+	LD	C,A
+VEXEC:	LD	A,C		;ejecutar el codigo de control C
+	ADD	A,A
+	LD	E,A
+	LD	D,0
+	LD	HL,VJUMP
+	ADD	HL,DE
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)
+	EX	DE,HL
+	JP	(HL)
+;
+PCNT:	DEFB	0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+	DEFB	0,1,2,5,0,0,1,9,8,5,0,0,4,4,0,2
+;
+VJUMP:	DEFW	VNOP,VNOP,VNOP,VNOP,VDU4,VDU5,VNOP,VBELL
+	DEFW	VBS,VHT,VLF,VVT,VCLS,VCR,VNOP,VNOP
+	DEFW	VCLG,VCOL,VGCOL,VNOP,VDEFC,VDIS,VMODE1,VDU23
+	DEFW	VGWIN,VPLOT,VRESW,VNOP,VTWIN,VORIG,VHOME,VTAB
+;
+VNOP:	RET
+;
+VDIS:	LD	A,1
+	LD	(VDISAB),A
+	RET
+;
+VBELL:	LD	A,6		;sin parlante: destello del LED
+	JP	NLED
+;
+VDU4:	XOR	A
+	LD	(VDU5F),A
+	RET
+;
+VDU5:	LD	A,1
+	LD	(VDU5F),A
+	RET
+;
+; ------------------------------------------------------------------
+; Modos y ventanas
+; ------------------------------------------------------------------
+;
+VMODE1:	LD	A,(QBUF)
+SETMODE:AND	01H
+	LD	(VMODE),A
+	LD	B,64
+	LD	C,5
+	JR	Z,SETM1
+	LD	B,40
+	LD	C,8
+SETM1:	LD	A,B
+	LD	(NCOLS),A
+	LD	A,C
+	LD	(CW),A
+	XOR	A
+	LD	(KBARON),A
+	CALL	VDEFC		;colores por omision
+	CALL	VRESW		;ventanas por omision
+	CALL	VDU4
+	LD	A,1
+	LD	(CSREN),A
+	CALL	FNTRST		;cada programa empieza con la fuente original
+	CALL	CLRALL
+	JP	VHOME
+;
+; FNTRST - vuelve la fuente y las marcas de ancho a los valores de fabrica
+FNTRST:	LD	HL,ROMFNT
+	LD	DE,UFONT
+	LD	BC,2048
+	LDIR
+	LD	HL,FWIDE
+	LD	DE,UFLAG
+	LD	BC,32
+	LDIR
+	RET
+;
+; VDEFC - colores por omision (VDU 20)
+VDEFC:	LD	A,1
+	LD	(TFG),A
+	LD	(GFG),A
+	XOR	A
+	LD	(TBG),A
+	LD	(GBG),A
+	LD	(GFGM),A
+	LD	(GBGM),A
+	RET
+;
+; VRESW - ventanas por omision (VDU 26)
+VRESW:	XOR	A
+	LD	(TWL),A
+	LD	(TWT),A
+	LD	A,15
+	LD	(TWB),A
+	LD	A,(NCOLS)
+	DEC	A
+	LD	(TWR),A
+	LD	HL,0
+	LD	(GWL),HL
+	LD	(GWB),HL
+	LD	(ORGX),HL
+	LD	(ORGY),HL
+	LD	(GX),HL
+	LD	(GY),HL
+	LD	(OGX),HL
+	LD	(OGY),HL
+	LD	HL,319
+	LD	(GWR),HL
+	LD	HL,127
+	LD	(GWT),HL
+	XOR	A
+	LD	(KBARON),A
+	JP	VHOME
+;
+; VDU 28,izq,abajo,der,arriba - ventana de texto
+VTWIN:	LD	HL,QBUF
+	LD	A,(NCOLS)
+	LD	B,A
+	LD	A,(HL)		;izq
+	CP	B
+	RET	NC
+	LD	C,A
+	INC	HL
+	LD	A,(HL)		;abajo
+	CP	16
+	RET	NC
+	LD	D,A
+	INC	HL
+	LD	A,(HL)		;der
+	CP	B
+	RET	NC
+	CP	C
+	RET	C
+	LD	E,A
+	INC	HL
+	LD	A,(HL)		;arriba
+	CP	D
+	JR	Z,VTW1
+	RET	NC
+VTW1:	LD	(TWT),A
+	LD	A,C
+	LD	(TWL),A
+	LD	A,D
+	LD	(TWB),A
+	LD	A,E
+	LD	(TWR),A
+	JP	VHOME
+;
+; VDU 24,izq;abajo;der;arriba; - ventana grafica
+VGWIN:	LD	HL,QBUF
+	LD	DE,GWL
+	LD	BC,8
+	LDIR
+	LD	HL,(GWL)	;limitar a la pantalla
+	CALL	CLIPX
+	LD	(GWL),HL
+	LD	HL,(GWR)
+	CALL	CLIPX
+	LD	(GWR),HL
+	LD	HL,(GWB)
+	CALL	CLIPY0
+	LD	(GWB),HL
+	LD	HL,(GWT)
+	CALL	CLIPY0
+	LD	(GWT),HL
+	RET
+;
+; CLIPY0 - limita HL a 0..127
+CLIPY0:	BIT	7,H
+	JR	Z,CLY01
+	LD	HL,0
+	RET
+CLY01:	LD	A,H
+	OR	A
+	JR	NZ,CLY02
+	LD	A,L
+	CP	128
+	RET	C
+CLY02:	LD	HL,127
+	RET
+;
+; VDU 29,x;y; - origen grafico
+VORIG:	LD	HL,(QBUF)
+	LD	(ORGX),HL
+	LD	HL,(QBUF+2)
+	LD	(ORGY),HL
+	RET
+;
+; ------------------------------------------------------------------
+; Cursor de texto
+; ------------------------------------------------------------------
+;
+VHOME:	XOR	A
+	LD	(PEND),A
+	LD	A,(TWL)
+	LD	(TX),A
+	LD	A,(TWT)
+	LD	(TY),A
+	RET
+;
+VCR:	XOR	A
+	LD	(PEND),A
+	LD	A,(VDU5F)
+	OR	A
+	JR	NZ,VCRG
+	LD	A,(TWL)
+	LD	(TX),A
+	RET
+VCRG:	LD	HL,(GWL)	;VDU5: cursor grafico al borde izquierdo
+	LD	(GX),HL
+	RET
+;
+; VDU 31,x,y
+VTAB:	XOR	A
+	LD	(PEND),A
+	LD	A,(QBUF)
+	LD	B,A
+	LD	A,(TWL)
+	ADD	A,B
+	LD	B,A
+	LD	A,(TWR)
+	CP	B
+	RET	C
+	LD	A,(QBUF+1)
+	LD	C,A
+	LD	A,(TWT)
+	ADD	A,C
+	LD	C,A
+	LD	A,(TWB)
+	CP	C
+	RET	C
+	LD	A,B
+	LD	(TX),A
+	LD	A,C
+	LD	(TY),A
+	RET
+;
+VHT:	LD	A,(VDU5F)
+	OR	A
+	JR	NZ,VHTG
+	LD	A,(PEND)
+	OR	A
+	JR	NZ,WRAP
+	LD	A,(TX)		;avanza un lugar
+	LD	B,A
+	LD	A,(TWR)
+	CP	B
+	JR	Z,VHT1
+	LD	A,B
+	INC	A
+	LD	(TX),A
+	RET
+VHT1:	LD	A,(TWL)
+	LD	(TX),A
+	JP	VLF
+VHTG:	LD	A,(CW)
+	LD	E,A
+	LD	D,0
+	LD	HL,(GX)
+	ADD	HL,DE
+	LD	(GX),HL
+	RET
+;
+VBS:	LD	A,(VDU5F)
+	OR	A
+	JR	NZ,VBSG
+	LD	A,(PEND)
+	OR	A
+	JR	Z,VBS0
+	XOR	A
+	LD	(PEND),A
+	RET
+VBS0:
+	LD	A,(TWL)
+	LD	B,A
+	LD	A,(TX)
+	CP	B
+	JR	Z,VBS1
+	DEC	A
+	LD	(TX),A
+	RET
+VBS1:	LD	A,(TWR)
+	LD	(TX),A
+	JP	VVT
+VBSG:	LD	A,(CW)
+	LD	E,A
+	LD	D,0
+	LD	HL,(GX)
+	OR	A
+	SBC	HL,DE
+	LD	(GX),HL
+	RET
+;
+VLF:	XOR	A
+	LD	(PEND),A
+	LD	A,(VDU5F)
+	OR	A
+	JR	NZ,VLFG
+	LD	A,(TWB)
+	LD	B,A
+	LD	A,(TY)
+	CP	B
+	JR	NC,VLF1
+	INC	A
+	LD	(TY),A
+	RET
+VLF1:	JP	SCRUP
+VLFG:	LD	HL,(GY)
+	LD	DE,8
+	OR	A
+	SBC	HL,DE
+	LD	(GY),HL
+	RET
+;
+VVT:	XOR	A
+	LD	(PEND),A
+	LD	A,(VDU5F)
+	OR	A
+	JR	NZ,VVTG
+	LD	A,(TWT)
+	LD	B,A
+	LD	A,(TY)
+	CP	B
+	JR	Z,VVT1
+	JR	C,VVT1
+	DEC	A
+	LD	(TY),A
+	RET
+VVT1:	JP	SCRDN
+VVTG:	LD	HL,(GY)
+	LD	DE,8
+	ADD	HL,DE
+	LD	(GY),HL
+	RET
+;
+; VDEL - borra el caracter a la izquierda
+VDEL:	CALL	VBS
+	LD	A,(VDU5F)
+	OR	A
+	JR	NZ,VDELG
+	LD	A,' '
+	CALL	DRAWTX
+	RET
+VDELG:	RET
+;
+; ------------------------------------------------------------------
+; PUTCH - escribe el caracter imprimible C
+; ------------------------------------------------------------------
+;
+PUTCH:	LD	A,(VDU5F)
+	OR	A
+	JR	NZ,PUTCHG
+	LD	A,(PEND)	;si quedo pendiente el salto, hacerlo ahora
+	OR	A
+	JR	Z,PUT1
+	PUSH	BC
+	CALL	WRAP
+	POP	BC
+PUT1:	LD	A,C
+	CALL	DRAWTX
+	LD	A,(TX)		;avanzar; en la ultima columna queda pendiente
+	LD	B,A
+	LD	A,(TWR)
+	CP	B
+	JR	Z,PUT2
+	LD	A,B
+	INC	A
+	LD	(TX),A
+	RET
+PUT2:	LD	A,1
+	LD	(PEND),A
+	RET
+;
+; WRAP - salto de linea por llegar al borde derecho
+WRAP:	XOR	A
+	LD	(PEND),A
+	LD	A,(TWL)
+	LD	(TX),A
+	JP	VLF
+;
+PUTCHG:	LD	A,C		;texto en el cursor grafico
+	CALL	DRAWGT
+	JP	VHTG
+;
+; DRAWTX - dibuja el caracter A en la posicion del cursor de texto
+DRAWTX:	PUSH	AF
+	LD	A,(TY)		;anotar en el mapa de caracteres
+	LD	L,A
+	LD	H,0
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL		;*64
+	LD	A,(TX)
+	LD	E,A
+	LD	D,0
+	ADD	HL,DE
+	LD	DE,CHMAP
+	ADD	HL,DE
+	POP	AF
+	LD	(HL),A
+	PUSH	AF
+	LD	A,(TX)		;x = TX * CW
+	LD	E,A
+	LD	A,(CW)
+	CALL	MUL8		;HL = A*E
+	LD	B,H
+	LD	C,L		;BC = x
+	LD	A,(TY)
+	ADD	A,A
+	ADD	A,A
+	ADD	A,A
+	LD	E,A		;E = fila de arriba
+	POP	AF
+	LD	D,A		;D = caracter
+	LD	A,(TFG)
+	LD	H,A
+	LD	A,(TBG)
+	LD	L,A
+	JP	GLYPH
+;
+; MUL8 - HL = A * E
+MUL8:	LD	HL,0
+	LD	D,0
+	OR	A
+	RET	Z
+MUL81:	ADD	HL,DE
+	DEC	A
+	JR	NZ,MUL81
+	RET
+;
+; GLYPH - dibuja un caracter opaco en una celda de texto.
+;   BC = x en puntos, E = fila superior (0-120), D = caracter,
+;   H = color del trazo, L = color del fondo.
+GLYPH:	LD	A,H
+	LD	(TMPW),A
+	LD	A,L
+	LD	(TMPW+1),A
+	LD	A,E
+	LD	(GROW),A
+	LD	A,D
+	PUSH	BC
+	CALL	GLYADR		;HL -> dibujo, GSHFT
+	POP	BC
+	EX	DE,HL		;DE -> dibujo
+	LD	A,C
+	AND	07H
+	LD	(GOFF),A	;desplazamiento dentro del byte
+	SRL	B
+	RR	C
+	SRL	B
+	RR	C
+	SRL	B
+	RR	C
+	LD	A,C
+	LD	(GCOL),A	;columna (0-39)
+	LD	L,C
+	LD	H,0
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	LD	A,(GROW)
+	LD	C,A
+	LD	B,80H
+	ADD	HL,BC		;HL -> FB + col*128 + fila
+	LD	A,(CW)
+	CP	8
+	LD	A,0FFH
+	JR	Z,GLY1
+	LD	A,1FH
+GLY1:	LD	(GMASK),A
+	LD	B,8
+GLY2:	PUSH	BC
+	LD	A,(DE)		;fila del dibujo
+	INC	DE
+	PUSH	DE
+	LD	C,A
+	LD	A,(GSHFT)
+	OR	A
+	JR	Z,GLY2A
+	SLA	C		;modo 1: centrar los caracteres de 5 puntos
+GLY2A:	LD	A,(GMASK)
+	AND	C
+	LD	C,A		;C = puntos del trazo
+	LD	B,0
+	LD	A,(TMPW)
+	OR	A
+	JR	Z,GLY3
+	LD	B,C
+GLY3:	LD	A,(TMPW+1)
+	OR	A
+	JR	Z,GLY4
+	LD	A,(GMASK)
+	XOR	C
+	OR	B
+	LD	B,A
+GLY4:	LD	C,B
+	LD	B,0		;BC = puntos finales
+	LD	A,(GMASK)
+	LD	E,A
+	LD	D,0		;DE = mascara
+	LD	A,(GOFF)
+	OR	A
+	JR	Z,GLY6
+GLY5:	SLA	C
+	RL	B
+	SLA	E
+	RL	D
+	DEC	A
+	JR	NZ,GLY5
+GLY6:	LD	A,E
+	CPL
+	AND	(HL)
+	OR	C
+	LD	(HL),A
+	LD	A,D
+	OR	A
+	JR	Z,GLY7
+	PUSH	HL		;parte que cae en la columna siguiente
+	LD	DE,128
+	ADD	HL,DE
+	CPL
+	AND	(HL)
+	OR	B
+	LD	(HL),A
+	POP	HL
+GLY7:	INC	HL
+	POP	DE
+	POP	BC
+	DJNZ	GLY2
+	LD	A,(GCOL)	;copiar al LCD
+	LD	B,A
+	LD	A,(GOFF)
+	LD	C,A
+	LD	A,(CW)
+	ADD	A,C
+	LD	C,1
+	CP	9
+	JR	C,GLY10
+	INC	C
+GLY10:	LD	A,(GROW)
+	LD	D,A
+	LD	E,8
+	JP	NLCD
+;
+; GLYADR - HL -> dibujo del caracter A en UFONT.
+;   GSHFT = 1 si hay que correrlo un punto (modo 1, caracter de 5 puntos)
+GLYADR:	PUSH	AF
+	XOR	A
+	LD	(GSHFT),A
+	LD	A,(VMODE)
+	OR	A
+	JR	Z,GLA2
+	POP	AF
+	PUSH	AF
+	LD	C,A		;buscar la marca de caracter ancho
+	RRCA
+	RRCA
+	RRCA
+	AND	1FH
+	LD	L,A
+	LD	H,0
+	LD	DE,UFLAG
+	ADD	HL,DE
+	LD	A,C
+	AND	07H
+	LD	B,A
+	LD	A,(HL)
+	INC	B
+GLA1:	DEC	B
+	JR	Z,GLA1A
+	RRCA
+	JR	GLA1
+GLA1A:	AND	01H
+	JR	NZ,GLA2
+	LD	A,1
+	LD	(GSHFT),A
+GLA2:	POP	AF
+	LD	L,A
+	LD	H,0
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	LD	DE,UFONT
+	ADD	HL,DE
+	RET
+;
+; DRAWGT - caracter A transparente en el cursor grafico (VDU 5)
+DRAWGT:	PUSH	AF
+	LD	A,1
+	CALL	GACT		;accion del color de trazo
+	LD	HL,(GY)
+	LD	DE,(ORGY)
+	ADD	HL,DE
+	LD	(LY0),HL
+	LD	HL,(GX)
+	LD	DE,(ORGX)
+	ADD	HL,DE
+	LD	(LX0),HL
+	CALL	BBRST
+	POP	AF
+	CALL	GLYADR		;HL -> dibujo
+	PUSH	HL
+	CALL	DGTF		;camino rapido si entra entero en la ventana
+	POP	HL
+	JP	NC,BBFLSH
+	LD	B,8
+DGT1:	PUSH	BC
+	LD	A,(HL)
+	INC	HL
+	PUSH	HL
+	LD	C,A
+	LD	A,(GSHFT)
+	OR	A
+	JR	Z,DGT1A
+	SLA	C
+DGT1A:	LD	A,(CW)
+	LD	B,A
+	LD	HL,(LX0)
+	LD	(LX1),HL
+DGT2:	SRL	C
+	JR	NC,DGT3
+	PUSH	BC
+	LD	HL,(LX1)
+	LD	DE,(LY0)
+	CALL	PSET
+	POP	BC
+DGT3:	LD	HL,(LX1)
+	INC	HL
+	LD	(LX1),HL
+	DJNZ	DGT2
+	LD	HL,(LY0)
+	DEC	HL
+	LD	(LY0),HL
+	POP	HL
+	POP	BC
+	DJNZ	DGT1
+	JP	BBFLSH
+;
+;
+; DGTF - dibuja el caracter de a bytes si cae entero dentro de la
+;   ventana grafica. HL -> dibujo. CY si hay que usar el camino lento.
+DGTF:	LD	A,(PACT)
+	OR	A
+	RET	Z
+	PUSH	HL
+	LD	HL,(LX0)
+	LD	BC,(GWL)
+	CALL	CMPS
+	JR	C,DGF9
+	LD	A,(CW)
+	DEC	A
+	LD	E,A
+	LD	D,0
+	ADD	HL,DE
+	LD	(SPX1),HL
+	LD	BC,(GWR)
+	CALL	CMPS2
+	JR	C,DGF9
+	LD	HL,(LY0)
+	LD	BC,(GWT)
+	CALL	CMPS2
+	JR	C,DGF9
+	LD	DE,-7
+	ADD	HL,DE
+	LD	BC,(GWB)
+	CALL	CMPS
+	JR	C,DGF9
+	LD	HL,(LX0)
+	LD	(SPX0),HL
+	LD	A,(LY0)
+	LD	B,A
+	LD	A,127
+	SUB	B
+	LD	(FSY),A
+	LD	E,A		;zona modificada
+	LD	A,(BBY0)
+	CP	E
+	JR	C,DGFA
+	LD	A,E
+	LD	(BBY0),A
+DGFA:	LD	A,E
+	ADD	A,7
+	LD	E,A
+	LD	A,(BBY1)
+	CP	E
+	JR	NC,DGFB
+	LD	A,E
+	LD	(BBY1),A
+DGFB:	LD	HL,(SPX0)
+	LD	BC,(BBX0)
+	CALL	CMPS
+	JR	NC,DGFC
+	LD	(BBX0),HL
+DGFC:	LD	HL,(SPX1)
+	LD	BC,(BBX1)
+	CALL	CMPS2
+	JR	NC,DGFD
+	LD	(BBX1),HL
+DGFD:	LD	A,(CW)
+	CP	8
+	LD	A,0FFH
+	JR	Z,DGF1
+	LD	A,1FH
+DGF1:	LD	(GMASK),A
+	LD	A,(SPX0)
+	AND	07H
+	LD	(GOFF),A
+	LD	HL,(SPX0)	;direccion en la pantalla virtual
+	CALL	SHR3
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	LD	A,(FSY)
+	LD	E,A
+	LD	D,80H
+	ADD	HL,DE
+	EX	DE,HL		;DE -> pantalla
+	POP	HL		;HL -> dibujo
+	LD	B,8
+DGF2:	PUSH	BC
+	LD	A,(HL)
+	INC	HL
+	LD	C,A
+	LD	A,(GSHFT)
+	OR	A
+	JR	Z,DGF3
+	SLA	C
+DGF3:	LD	A,(GMASK)
+	AND	C
+	LD	C,A
+	LD	B,0
+	LD	A,(GOFF)
+	OR	A
+	JR	Z,DGF5
+DGF4:	SLA	C
+	RL	B
+	DEC	A
+	JR	NZ,DGF4
+DGF5:	EX	DE,HL
+	LD	A,C
+	CALL	FSAPP
+	LD	A,B
+	OR	A
+	JR	Z,DGF6
+	PUSH	HL
+	LD	BC,128
+	ADD	HL,BC
+	CALL	FSAPP
+	POP	HL
+DGF6:	INC	HL
+	EX	DE,HL
+	POP	BC
+	DJNZ	DGF2
+	OR	A
+	RET
+DGF9:	POP	HL
+	SCF
+	RET
+;
+; ------------------------------------------------------------------
+; Borrado y desplazamiento
+; ------------------------------------------------------------------
+;
+; CLRALL - borra toda la pantalla y el mapa de caracteres
+CLRALL:	LD	HL,FB
+	LD	DE,FB+1
+	LD	BC,5119
+	LD	(HL),0
+	LDIR
+	LD	HL,CHMAP
+	LD	DE,CHMAP+1
+	LD	BC,1023
+	LD	(HL),' '
+	LDIR
+	LD	B,0
+	LD	C,40
+	LD	D,0
+	LD	E,128
+	JP	NLCD
+;
+; VCLS - borra la ventana de texto (VDU 12)
+VCLS:	LD	A,(VDU5F)
+	OR	A
+	JP	NZ,VCLG
+	LD	A,(TWT)
+	LD	D,A
+	LD	A,(TWB)
+	SUB	D
+	INC	A
+	LD	E,A		;filas de texto
+	CALL	TXCLR
+	JP	VHOME
+;
+; TXCLR - borra E filas de texto desde la fila D en la ventana
+TXCLR:	PUSH	DE
+	LD	A,D		;mapa de caracteres
+	LD	B,E
+TXC1:	PUSH	AF
+	PUSH	BC
+	CALL	CMROW		;HL -> fila A, columna TWL
+	LD	A,(TWR)
+	LD	B,A
+	LD	A,(TWL)
+	LD	C,A
+	LD	A,B
+	SUB	C
+	INC	A
+	LD	B,A
+TXC2:	LD	(HL),' '
+	INC	HL
+	DJNZ	TXC2
+	POP	BC
+	POP	AF
+	INC	A
+	DJNZ	TXC1
+	POP	DE
+	LD	A,D		;puntos: filas D*8 .. (D+E)*8-1
+	ADD	A,A
+	ADD	A,A
+	ADD	A,A
+	LD	D,A
+	LD	A,E
+	ADD	A,A
+	ADD	A,A
+	ADD	A,A
+	LD	E,A
+	LD	A,(TBG)
+	JP	RECTXT
+;
+; CMROW - HL -> CHMAP fila A, columna TWL
+CMROW:	LD	L,A
+	LD	H,0
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	LD	A,(TWL)
+	ADD	A,L
+	LD	L,A
+	LD	A,H
+	ADC	A,0
+	LD	H,A
+	LD	DE,CHMAP
+	ADD	HL,DE
+	RET
+;
+; RECTXT - llena con el color A las filas de puntos D..D+E-1
+;          entre las columnas de texto TWL y TWR, y copia al LCD.
+RECTXT:	LD	(TMPW),A
+	PUSH	DE
+	LD	A,(TWL)		;x0 = TWL*CW
+	LD	E,A
+	LD	A,(CW)
+	CALL	MUL8
+	LD	(SPX0),HL
+	LD	A,(TWR)
+	INC	A
+	LD	E,A
+	LD	A,(CW)
+	CALL	MUL8
+	DEC	HL
+	LD	(SPX1),HL	;x1
+	POP	DE
+	LD	A,D
+	LD	(BBY0),A
+	ADD	A,E
+	DEC	A
+	LD	(BBY1),A
+	; recorrer columnas de 8 puntos
+	LD	HL,(SPX0)
+	LD	(BBX0),HL
+	LD	HL,(SPX1)
+	LD	(BBX1),HL
+	CALL	FILLBX
+	JP	BBFLSH
+;
+; FILLBX - llena el rectangulo BBX0..BBX1 x BBY0..BBY1 (pantalla)
+;          con el color (TMPW). Usa mascaras por byte.
+FILLBX:	LD	HL,(BBX0)
+	LD	A,L
+	AND	07H
+	LD	B,A		;bit inicial
+	SRL	H
+	RR	L
+	SRL	H
+	RR	L
+	SRL	H
+	RR	L
+	LD	C,L		;columna inicial
+	LD	HL,(BBX1)
+	LD	A,L
+	AND	07H
+	LD	D,A		;bit final
+	SRL	H
+	RR	L
+	SRL	H
+	RR	L
+	SRL	H
+	RR	L
+	LD	E,L		;columna final
+FBX1:	; mascara para la columna C
+	LD	A,0FFH
+	PUSH	BC
+	LD	A,C
+	CP	E		;columna final?
+	LD	A,0FFH
+	JR	NZ,FBX2
+	LD	A,D		;bits 0..D
+	INC	A
+	LD	B,A
+	XOR	A
+FBX1A:	SCF
+	RLA
+	DJNZ	FBX1A
+FBX2:	POP	BC
+	PUSH	BC
+	LD	H,A		;H = mascara derecha
+	LD	A,B
+	OR	A
+	LD	A,0FFH
+	JR	Z,FBX3
+	PUSH	BC		;bits B..7
+FBX2A:	ADD	A,A
+	DJNZ	FBX2A
+	POP	BC
+FBX3:	AND	H
+	LD	H,A		;mascara de la columna
+	; llenar las filas
+	PUSH	DE
+	PUSH	HL
+	LD	L,C
+	LD	H,0
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	LD	A,(BBY0)
+	LD	E,A
+	LD	D,80H
+	ADD	HL,DE
+	POP	DE		;D = mascara
+	LD	A,(BBY1)
+	LD	B,A
+	LD	A,(BBY0)
+	LD	C,A
+	LD	A,B
+	SUB	C
+	INC	A
+	LD	B,A		;filas
+	LD	A,(TMPW)
+	OR	A
+	JR	Z,FBX5
+FBX4:	LD	A,(HL)		;encender
+	OR	D
+	LD	(HL),A
+	INC	HL
+	DJNZ	FBX4
+	JR	FBX6
+FBX5:	LD	A,D		;apagar
+	CPL
+	LD	E,A
+FBX5A:	LD	A,(HL)
+	AND	E
+	LD	(HL),A
+	INC	HL
+	DJNZ	FBX5A
+FBX6:	POP	DE
+	POP	BC
+	LD	B,0		;las columnas siguientes empiezan en el bit 0
+	LD	A,C
+	CP	E
+	RET	Z
+	INC	C
+	JR	FBX1
+;
+; SCRUP - desplaza la ventana de texto una fila hacia arriba
+SCRUP:	LD	A,(TWT)
+	LD	D,A		;fila de destino
+	LD	A,(TWB)
+	SUB	D
+	JR	Z,SCRU9		;una sola fila: solo borrar
+	LD	E,A		;filas a mover
+	LD	B,E
+	LD	A,D
+SCRU1:	PUSH	BC		;mapa de caracteres
+	PUSH	AF
+	CALL	CMROW
+	PUSH	HL
+	LD	DE,64
+	ADD	HL,DE
+	POP	DE
+	LD	A,(TWR)
+	LD	B,A
+	LD	A,(TWL)
+	LD	C,A
+	LD	A,B
+	SUB	C
+	INC	A
+	LD	C,A
+	LD	B,0
+	LDIR
+	POP	AF
+	POP	BC
+	INC	A
+	DJNZ	SCRU1
+	; puntos: mover filas
+	LD	A,(TWT)
+	ADD	A,A
+	ADD	A,A
+	ADD	A,A
+	LD	(BBY0),A	;fila superior en puntos
+	LD	A,(TWB)
+	INC	A
+	ADD	A,A
+	ADD	A,A
+	ADD	A,A
+	DEC	A
+	LD	(BBY1),A	;fila inferior
+	CALL	TXBOX		;BBX0/BBX1 de la ventana
+	LD	A,1
+	CALL	MOVEROWS
+SCRU9:	LD	A,(TWB)
+	LD	D,A
+	LD	E,1
+	CALL	TXCLR
+	CALL	FULLFL
+	RET
+;
+; SCRDN - desplaza la ventana de texto una fila hacia abajo
+SCRDN:	LD	A,(TWB)
+	LD	D,A
+	LD	A,(TWT)
+	LD	E,A
+	LD	A,D
+	SUB	E
+	JR	Z,SCRD9
+	LD	B,A
+	LD	A,D
+SCRD1:	PUSH	BC
+	PUSH	AF
+	CALL	CMROW
+	PUSH	HL
+	LD	DE,-64
+	ADD	HL,DE
+	POP	DE
+	EX	DE,HL		;HL = fila de arriba, DE = fila actual
+	LD	A,(TWR)
+	LD	B,A
+	LD	A,(TWL)
+	LD	C,A
+	LD	A,B
+	SUB	C
+	INC	A
+	LD	C,A
+	LD	B,0
+	LDIR
+	POP	AF
+	POP	BC
+	DEC	A
+	DJNZ	SCRD1
+	LD	A,(TWT)
+	ADD	A,A
+	ADD	A,A
+	ADD	A,A
+	LD	(BBY0),A
+	LD	A,(TWB)
+	INC	A
+	ADD	A,A
+	ADD	A,A
+	ADD	A,A
+	DEC	A
+	LD	(BBY1),A
+	CALL	TXBOX
+	XOR	A
+	CALL	MOVEROWS
+SCRD9:	LD	A,(TWT)
+	LD	D,A
+	LD	E,1
+	CALL	TXCLR
+	CALL	FULLFL
+	RET
+;
+; TXBOX - BBX0/BBX1 = limites en puntos de la ventana de texto
+TXBOX:	LD	A,(TWL)
+	LD	E,A
+	LD	A,(CW)
+	CALL	MUL8
+	LD	(BBX0),HL
+	LD	A,(TWR)
+	INC	A
+	LD	E,A
+	LD	A,(CW)
+	CALL	MUL8
+	DEC	HL
+	LD	(BBX1),HL
+	RET
+;
+; FULLFL - copia al LCD la ventana de texto completa
+FULLFL:	CALL	TXBOX
+	LD	A,(TWT)
+	ADD	A,A
+	ADD	A,A
+	ADD	A,A
+	LD	(BBY0),A
+	LD	A,(TWB)
+	INC	A
+	ADD	A,A
+	ADD	A,A
+	ADD	A,A
+	DEC	A
+	LD	(BBY1),A
+	JP	BBFLSH
+;
+; MOVEROWS - mueve 8 filas de puntos dentro de la zona BBX0..BBX1,
+;   BBY0..BBY1. A=1: hacia arriba, A=0: hacia abajo.
+MOVEROWS:
+	LD	(DSAVE),A
+	LD	HL,(BBX0)
+	LD	A,L
+	AND	07H
+	LD	(TMPW),A	;bit inicial
+	CALL	SHR3
+	LD	A,L
+	LD	(TMPW+1),A	;columna inicial
+	LD	HL,(BBX1)
+	LD	A,L
+	AND	07H
+	LD	(LE2),A		;bit final
+	CALL	SHR3
+	LD	A,L
+	LD	(LE2+1),A	;columna final
+	LD	A,(TMPW+1)
+	LD	C,A
+MVR1:	; mascara de la columna C
+	LD	A,(TMPW+1)
+	CP	C
+	LD	A,0FFH
+	JR	NZ,MVR2
+	LD	A,(TMPW)	;bits desde el inicial
+	OR	A
+	LD	A,0FFH
+	JR	Z,MVR2
+	PUSH	BC
+	LD	A,(TMPW)
+	LD	B,A
+	LD	A,0FFH
+MVR1A:	ADD	A,A
+	DJNZ	MVR1A
+	POP	BC
+MVR2:	LD	E,A
+	LD	A,(LE2+1)
+	CP	C
+	JR	NZ,MVR3
+	PUSH	BC
+	LD	A,(LE2)
+	INC	A
+	LD	B,A
+	XOR	A
+MVR2A:	SCF
+	RLA
+	DJNZ	MVR2A
+	POP	BC
+	AND	E
+	LD	E,A
+MVR3:	; E = mascara; filas BBY0..BBY1 de la columna C
+	PUSH	BC
+	LD	L,C
+	LD	H,0
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	LD	BC,FB
+	ADD	HL,BC		;HL -> columna
+	LD	A,(BBY1)
+	LD	B,A
+	LD	A,(BBY0)
+	LD	C,A
+	LD	A,B
+	SUB	C
+	SUB	7
+	JR	C,MVR9		;menos de 8 filas
+	JR	Z,MVR9
+	LD	B,A		;filas a copiar
+	LD	A,(DSAVE)
+	OR	A
+	JR	Z,MVRDN
+	; hacia arriba: destino = BBY0, origen = BBY0+8
+	LD	A,C
+	ADD	A,L
+	LD	L,A
+	LD	A,H
+	ADC	A,0
+	LD	H,A		;HL -> fila BBY0
+	LD	A,E
+	CP	0FFH
+	JR	NZ,MVRU2
+	LD	D,H		;columna entera: LDIR
+	LD	E,L
+	LD	A,L
+	ADD	A,8
+	LD	L,A
+	LD	A,H
+	ADC	A,0
+	LD	H,A
+	LD	C,B
+	LD	B,0
+	LDIR
+	JR	MVR9
+MVRU2:	LD	D,E		;D = mascara
+MVRU3:	PUSH	HL
+	LD	A,L
+	ADD	A,8
+	LD	L,A
+	LD	A,H
+	ADC	A,0
+	LD	H,A
+	LD	A,(HL)
+	POP	HL
+	AND	D
+	LD	C,A
+	LD	A,D
+	CPL
+	AND	(HL)
+	OR	C
+	LD	(HL),A
+	INC	HL
+	DJNZ	MVRU3
+	JR	MVR9
+MVRDN:	; hacia abajo: destino = BBY1, origen = BBY1-8
+	LD	A,(BBY1)
+	ADD	A,L
+	LD	L,A
+	LD	A,H
+	ADC	A,0
+	LD	H,A		;HL -> fila BBY1
+	LD	D,E
+MVRD3:	PUSH	HL
+	LD	A,L
+	SUB	8
+	LD	L,A
+	LD	A,H
+	SBC	A,0
+	LD	H,A
+	LD	A,(HL)
+	POP	HL
+	AND	D
+	LD	C,A
+	LD	A,D
+	CPL
+	AND	(HL)
+	OR	C
+	LD	(HL),A
+	DEC	HL
+	DJNZ	MVRD3
+MVR9:	POP	BC
+	LD	A,(LE2+1)
+	CP	C
+	RET	Z
+	INC	C
+	JP	MVR1
+;
+SHR3:	SRL	H
+	RR	L
+	SRL	H
+	RR	L
+	SRL	H
+	RR	L
+	RET
+;
+; ------------------------------------------------------------------
+; VDU 23,7,m,d,0;0;0; - desplaza la ventana de texto (m=0) o toda la
+;   pantalla (m=1) un caracter: d = 0 derecha, 1 izquierda, 2 abajo,
+;   3 arriba. Derecha e izquierda solo en el modo 1 (40 columnas).
+; ------------------------------------------------------------------
+;
+V23S:	LD	HL,TWL		;guardar la ventana
+	LD	DE,SVWIN
+	LD	BC,4
+	LDIR
+	LD	A,(QBUF+1)
+	OR	A
+	JR	Z,V23S1
+	XOR	A		;toda la pantalla
+	LD	(TWL),A
+	LD	(TWT),A
+	LD	A,15
+	LD	(TWB),A
+	LD	A,(NCOLS)
+	DEC	A
+	LD	(TWR),A
+V23S1:	LD	A,(QBUF+2)
+	CP	2
+	JR	NZ,V23S2
+	CALL	SCRDN
+	JR	V23S9
+V23S2:	CP	3
+	JR	NZ,V23S3
+	CALL	SCRUP
+	JR	V23S9
+V23S3:	LD	B,A
+	LD	A,(CW)
+	CP	8
+	JR	NZ,V23S9	;modo 0: no se puede de costado
+	LD	A,B
+	CP	1
+	JR	Z,V23L
+	OR	A
+	CALL	Z,HSCRR
+	JR	V23S9
+V23L:	CALL	HSCRL
+V23S9:	LD	HL,SVWIN
+	LD	DE,TWL
+	LD	BC,4
+	LDIR
+	RET
+;
+; HSCRV - prepara: C = cantidad de columnas - 1, D = primera fila de
+;   puntos, E = cantidad de filas
+HSCRV:	LD	A,(TWR)
+	LD	B,A
+	LD	A,(TWL)
+	LD	C,A
+	LD	A,B
+	SUB	C
+	LD	C,A
+	LD	A,(TWT)
+	ADD	A,A
+	ADD	A,A
+	ADD	A,A
+	LD	D,A
+	LD	A,(TWB)
+	INC	A
+	ADD	A,A
+	ADD	A,A
+	ADD	A,A
+	SUB	D
+	LD	E,A
+	RET
+;
+; COLADR - HL = FB + columna A * 128 + fila D
+COLADR:	LD	L,A
+	LD	H,0
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	LD	A,D
+	ADD	A,L
+	LD	L,A
+	LD	A,H
+	ADC	A,80H
+	LD	H,A
+	RET
+;
+; HSCRL - ventana a la izquierda una columna (modo 1)
+HSCRL:	CALL	HSCRV
+	LD	A,E
+	LD	(SVROWS),A
+	LD	A,C
+	OR	A
+	JR	Z,HSL2
+	LD	A,(TWL)
+	LD	B,C		;columnas a mover
+HSL1:	PUSH	BC
+	PUSH	AF
+	PUSH	DE
+	CALL	COLADR		;destino = columna A
+	LD	D,H
+	LD	E,L
+	LD	BC,128
+	ADD	HL,BC		;origen = columna A+1
+	LD	A,(SVROWS)
+	LD	C,A
+	LD	B,0
+	LDIR
+	POP	DE
+	POP	AF
+	INC	A
+	POP	BC
+	DJNZ	HSL1
+HSL2:	LD	A,(TWR)		;borrar la ultima columna
+	CALL	HCLR
+	CALL	HCMAPL
+	JP	HFLUSH
+;
+; HSCRR - ventana a la derecha una columna (modo 1)
+HSCRR:	CALL	HSCRV
+	LD	A,E
+	LD	(SVROWS),A
+	LD	A,C
+	OR	A
+	JR	Z,HSR2
+	LD	A,(TWR)
+	LD	B,C
+HSR1:	PUSH	BC
+	PUSH	AF
+	PUSH	DE
+	CALL	COLADR		;destino = columna A
+	LD	D,H
+	LD	E,L
+	LD	BC,-128
+	ADD	HL,BC		;origen = columna A-1
+	LD	A,(SVROWS)
+	LD	C,A
+	LD	B,0
+	LDIR
+	POP	DE
+	POP	AF
+	DEC	A
+	POP	BC
+	DJNZ	HSR1
+HSR2:	LD	A,(TWL)
+	CALL	HCLR
+	CALL	HCMAPR
+	JP	HFLUSH
+;
+; HCLR - pinta la columna A (filas de la ventana) con el fondo
+HCLR:	PUSH	AF
+	CALL	HSCRV
+	POP	AF
+	CALL	COLADR
+	LD	B,E
+	LD	A,(TBG)
+	OR	A
+	JR	Z,HCL1
+	LD	A,0FFH
+HCL1:	LD	(HL),A
+	INC	HL
+	DJNZ	HCL1
+	RET
+;
+HFLUSH:	CALL	HSCRV
+	LD	A,(TWL)
+	LD	B,A
+	INC	C
+	JP	NLCD
+;
+; HCMAPL / HCMAPR - mueve el mapa de caracteres de la ventana
+HCMAPL:	LD	A,(TWT)
+HCL2:	PUSH	AF
+	CALL	CMROW		;HL -> fila A, columna TWL
+	LD	D,H
+	LD	E,L
+	INC	HL
+	LD	A,(TWR)
+	LD	B,A
+	LD	A,(TWL)
+	LD	C,A
+	LD	A,B
+	SUB	C
+	JR	Z,HCL3
+	LD	C,A
+	LD	B,0
+	LDIR
+HCL3:	LD	A,' '
+	LD	(DE),A
+	POP	AF
+	LD	B,A
+	LD	A,(TWB)
+	CP	B
+	RET	Z
+	LD	A,B
+	INC	A
+	JR	HCL2
+;
+HCMAPR:	LD	A,(TWT)
+HCR2:	PUSH	AF
+	CALL	CMROW
+	LD	A,(TWR)
+	LD	B,A
+	LD	A,(TWL)
+	LD	C,A
+	LD	A,B
+	SUB	C
+	LD	C,A
+	LD	B,0
+	ADD	HL,BC		;HL -> columna TWR
+	LD	D,H
+	LD	E,L
+	LD	A,C
+	OR	A
+	JR	Z,HCR3
+	DEC	HL
+	LDDR
+HCR3:	LD	A,' '
+	LD	(DE),A
+	POP	AF
+	LD	B,A
+	LD	A,(TWB)
+	CP	B
+	RET	Z
+	LD	A,B
+	INC	A
+	JR	HCR2
+;
+; ------------------------------------------------------------------
+; Cursor visible
+; ------------------------------------------------------------------
+;
+VCSRON:
+VCSROFF:CALL	MAPV
+	LD	A,(CSREN)
+	OR	A
+	RET	Z
+	LD	A,(VDU5F)
+	OR	A
+	RET	NZ
+	; invertir la celda del cursor
+	LD	A,(TX)
+	LD	E,A
+	LD	A,(CW)
+	CALL	MUL8
+	LD	(BBX0),HL
+	LD	A,(CW)
+	DEC	A
+	LD	E,A
+	LD	D,0
+	ADD	HL,DE
+	LD	(BBX1),HL
+	LD	A,(TY)
+	ADD	A,A
+	ADD	A,A
+	ADD	A,A
+	LD	(BBY0),A
+	ADD	A,7
+	LD	(BBY1),A
+	CALL	INVBX
+	JP	BBFLSH
+;
+; INVBX - invierte el rectangulo BBX0..BBX1 x BBY0..BBY1
+INVBX:	LD	HL,(BBX0)
+	LD	(LX0),HL
+INVB1:	LD	A,(BBY0)
+	LD	C,A
+INVB2:	PUSH	BC
+	LD	HL,(LX0)
+	LD	E,C
+	LD	D,0
+	CALL	PIXADR
+	XOR	(HL)
+	LD	(HL),A
+	POP	BC
+	LD	A,(BBY1)
+	CP	C
+	JR	Z,INVB3
+	INC	C
+	JR	INVB2
+INVB3:	LD	HL,(LX0)
+	LD	DE,(BBX1)
+	OR	A
+	SBC	HL,DE
+	RET	Z
+	LD	HL,(LX0)
+	INC	HL
+	LD	(LX0),HL
+	JR	INVB1
+;
+; PIXADR - HL = x de pantalla (0-319), E = y de pantalla (0-127)
+;   Salida: HL -> byte en FB, A = mascara del punto
+PIXADR:	LD	A,L
+	AND	07H
+	LD	B,A
+	CALL	SHR3
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL		;col*128
+	LD	D,80H
+	ADD	HL,DE
+	LD	A,1
+	INC	B
+PXA1:	DEC	B
+	RET	Z
+	ADD	A,A
+	JR	PXA1
+;
+; ------------------------------------------------------------------
+; Barra de teclas de funcion (fila 15)
+; ------------------------------------------------------------------
+;
+VKBAR:	PUSH	AF
+	CALL	MAPV
+	POP	AF
+	OR	A
+	JP	Z,KBOFF
+	; si el cursor esta en la ultima fila, subir la pantalla
+	LD	A,(TWB)
+	CP	15
+	JR	NZ,KBR1
+	LD	A,(TY)
+	CP	15
+	JR	NZ,KBR0
+	CALL	SCRUP
+	LD	A,14
+	LD	(TY),A
+KBR0:	LD	A,14
+	LD	(TWB),A
+KBR1:	; dibujar las 5 etiquetas
+	LD	A,(TX)
+	PUSH	AF
+	LD	A,(TY)
+	PUSH	AF
+	LD	A,15
+	LD	(TY),A
+	XOR	A
+	LD	(TX),A
+	LD	A,(NCOLS)
+	LD	C,12		;ancho de cada etiqueta
+	CP	64
+	JR	Z,KBR2
+	LD	C,8
+KBR2:	LD	B,1		;tecla 1..5
+KBR3:	PUSH	BC
+	LD	A,B		;numero (normal)
+	ADD	A,'0'
+	CALL	KBPUT
+	LD	A,1		;etiqueta (invertida)
+	LD	(TBG),A
+	XOR	A
+	LD	(TFG),A
+	POP	BC
+	PUSH	BC
+	LD	L,B
+	LD	H,0
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	LD	DE,KEYSTR
+	ADD	HL,DE
+	LD	A,(HL)		;largo del texto
+	INC	HL
+	LD	E,A
+	LD	A,C
+	SUB	2		;lugares para el texto
+	LD	D,A
+KBR4:	LD	A,D
+	OR	A
+	JR	Z,KBR6
+	LD	A,E
+	OR	A
+	LD	A,' '
+	JR	Z,KBR5
+	LD	A,(HL)
+	INC	HL
+	DEC	E
+	CP	' '
+	JR	NC,KBR5
+	LD	A,' '		;CR y controles se ven como espacio
+KBR5:	PUSH	DE
+	PUSH	HL
+	CALL	KBPUT
+	POP	HL
+	POP	DE
+	DEC	D
+	JR	KBR4
+KBR6:	CALL	VDEFC		;separador normal
+	POP	BC
+	LD	A,B
+	CP	5
+	JR	Z,KBR7
+	PUSH	BC
+	LD	A,' '
+	CALL	KBPUT
+	POP	BC
+	INC	B
+	JR	KBR3
+KBR7:	POP	AF		;restaurar el cursor
+	LD	(TY),A
+	POP	AF
+	LD	(TX),A
+	RET
+;
+KBPUT:	PUSH	BC
+	LD	C,A
+	LD	A,(NCOLS)
+	LD	B,A
+	LD	A,(TX)
+	CP	B
+	JR	NC,KBP9		;fuera de la pantalla
+	LD	A,C
+	CALL	DRAWTX
+	LD	HL,TX
+	INC	(HL)
+KBP9:	POP	BC
+	RET
+;
+KBOFF:	LD	A,(TWB)		;quitar la barra
+	CP	14
+	RET	NZ
+	LD	A,15
+	LD	(TWB),A
+	LD	A,(TWL)
+	PUSH	AF
+	LD	A,(TWR)
+	PUSH	AF
+	XOR	A
+	LD	(TWL),A
+	LD	A,(NCOLS)
+	DEC	A
+	LD	(TWR),A
+	LD	D,15
+	LD	E,1
+	CALL	TXCLR
+	POP	AF
+	LD	(TWR),A
+	POP	AF
+	LD	(TWL),A
+	RET
+;
+; ------------------------------------------------------------------
+; Graficos
+; ------------------------------------------------------------------
+;
+; VCLG - borra la ventana grafica con el color de fondo (VDU 16)
+VCLG:	LD	HL,(GWL)
+	CALL	CLIPX
+	LD	(BBX0),HL
+	LD	HL,(GWR)
+	CALL	CLIPX
+	LD	(BBX1),HL
+	LD	HL,(GWT)
+	CALL	CLIPY
+	LD	(BBY0),A
+	LD	HL,(GWB)
+	CALL	CLIPY
+	LD	(BBY1),A
+	LD	A,(GBG)
+	LD	(TMPW),A
+	CALL	FILLBX
+	JP	BBFLSH
+;
+; CLIPX - limita HL a 0..319.  CLIPY - A = 127-HL limitado a 0..127
+CLIPX:	BIT	7,H
+	JR	Z,CLX1
+	LD	HL,0
+	RET
+CLX1:	PUSH	DE
+	LD	DE,320
+	OR	A
+	SBC	HL,DE
+	ADD	HL,DE
+	POP	DE
+	RET	C
+	LD	HL,319
+	RET
+;
+CLIPY:	BIT	7,H
+	JR	Z,CLY1
+	LD	A,127
+	RET
+CLY1:	LD	A,H
+	OR	A
+	JR	NZ,CLY2
+	LD	A,L
+	CP	128
+	JR	NC,CLY2
+	LD	A,127
+	SUB	L
+	RET
+CLY2:	XOR	A
+	RET
+;
+; VDU 17,c - color del texto
+VCOL:	LD	A,(QBUF)
+	BIT	7,A
+	JR	NZ,VCOL1
+	OR	A
+	JR	Z,VCOL0
+	LD	A,1
+VCOL0:	LD	(TFG),A
+	RET
+VCOL1:	AND	7FH
+	JR	Z,VCOL2
+	LD	A,1
+VCOL2:	LD	(TBG),A
+	RET
+;
+; VDU 18,m,c - color grafico
+VGCOL:	LD	A,(QBUF+1)
+	LD	B,A
+	LD	A,(QBUF)
+	LD	C,A
+	LD	A,B
+	BIT	7,A
+	JR	NZ,VGC1
+	OR	A
+	JR	Z,VGC0
+	LD	A,1
+VGC0:	LD	(GFG),A
+	LD	A,C
+	LD	(GFGM),A
+	RET
+VGC1:	AND	7FH
+	JR	Z,VGC2
+	LD	A,1
+VGC2:	LD	(GBG),A
+	LD	A,C
+	LD	(GBGM),A
+	RET
+;
+; VDU 23 - definir caracteres y cursor
+VDU23:	LD	A,(QBUF)
+	CP	1
+	JR	Z,V23C
+	CP	7
+	JP	Z,V23S
+	CP	32
+	RET	C
+	LD	C,A		;marcar como caracter de 8 puntos
+	RRCA
+	RRCA
+	RRCA
+	AND	1FH
+	LD	L,A
+	LD	H,0
+	LD	DE,UFLAG
+	ADD	HL,DE
+	LD	A,C
+	AND	07H
+	LD	B,A
+	LD	A,1
+	INC	B
+V23M:	DEC	B
+	JR	Z,V23N
+	ADD	A,A
+	JR	V23M
+V23N:	OR	(HL)
+	LD	(HL),A
+	LD	A,C
+	LD	L,A		;definir el caracter A
+	LD	H,0
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	LD	DE,UFONT
+	ADD	HL,DE
+	EX	DE,HL
+	LD	HL,QBUF+1
+	LD	B,8
+V23A:	LD	A,(HL)		;invertir el orden de los bits
+	LD	C,0
+	PUSH	BC
+	LD	B,8
+V23B:	RRA
+	RL	C
+	DJNZ	V23B
+	LD	A,C
+	POP	BC
+	LD	(DE),A
+	INC	HL
+	INC	DE
+	DJNZ	V23A
+	RET
+V23C:	LD	A,(QBUF+1)	;VDU 23,1,n: cursor
+	OR	A
+	JR	Z,V23D
+	LD	A,1
+V23D:	LD	(CSREN),A
+	RET
+;
+; GACT - calcula la accion de dibujo para el tipo de PLOT (A = k AND 3)
+GACT:	CP	2
+	JR	Z,GACTI
+	CP	3
+	JR	Z,GACTB
+	OR	A
+	JR	NZ,GACT1
+	XOR	A		;0: no dibuja
+	JR	GACTS
+GACTI:	LD	A,3		;2: invertir
+	JR	GACTS
+GACT1:	LD	A,(GFG)
+	LD	B,A
+	LD	A,(GFGM)
+	JR	GACT2
+GACTB:	LD	A,(GBG)
+	LD	B,A
+	LD	A,(GBGM)
+GACT2:	; A = modo, B = color
+	CP	4
+	JR	Z,GACTI
+	JR	NC,GACT0
+	OR	A
+	JR	NZ,GACT3
+	LD	A,B		;0: poner el color
+	OR	A
+	LD	A,1
+	JR	NZ,GACTS
+	LD	A,2
+	JR	GACTS
+GACT3:	CP	1
+	JR	NZ,GACT4
+	LD	A,B		;1: OR
+	OR	A
+	JR	Z,GACT0
+	LD	A,1
+	JR	GACTS
+GACT4:	CP	2
+	JR	NZ,GACT5
+	LD	A,B		;2: AND
+	OR	A
+	JR	NZ,GACT0
+	LD	A,2
+	JR	GACTS
+GACT5:	LD	A,B		;3: EOR
+	OR	A
+	JR	Z,GACT0
+	LD	A,3
+	JR	GACTS
+GACT0:	XOR	A
+GACTS:	LD	(PACT),A
+	RET
+;
+; BBRST - zona modificada vacia
+BBRST:	LD	HL,7FFFH
+	LD	(BBX0),HL
+	LD	HL,8000H
+	LD	(BBX1),HL
+	LD	A,0FFH
+	LD	(BBY0),A
+	XOR	A
+	LD	(BBY1),A
+	RET
+;
+; BBFLSH - copia al LCD la zona modificada
+BBFLSH:	LD	HL,(BBX1)
+	BIT	7,H
+	RET	NZ		;nada
+	LD	DE,(BBX0)
+	OR	A
+	SBC	HL,DE
+	RET	C
+	LD	HL,(BBX0)
+	CALL	SHR3
+	LD	B,L		;primera columna
+	LD	HL,(BBX1)
+	CALL	SHR3
+	LD	A,L
+	SUB	B
+	INC	A
+	LD	C,A		;columnas
+	LD	A,(BBY0)
+	LD	D,A
+	LD	A,(BBY1)
+	SUB	D
+	RET	C
+	INC	A
+	LD	E,A
+	JP	NLCD
+;
+; PSET - dibuja un punto en coordenadas graficas absolutas.
+;   HL = x, DE = y (y hacia arriba). Respeta la ventana grafica.
+;   Usa la accion PACT y actualiza la zona modificada.
+PSET:	LD	A,(PACT)
+	OR	A
+	RET	Z
+	PUSH	HL		;dentro de la ventana?
+	LD	BC,(GWL)
+	CALL	CMPS
+	JR	C,PSET9		;x < GWL
+	LD	BC,(GWR)
+	CALL	CMPS2
+	JR	C,PSET9		;GWR < x
+	EX	DE,HL
+	LD	BC,(GWB)
+	CALL	CMPS
+	JR	C,PSET8
+	LD	BC,(GWT)
+	CALL	CMPS2
+	JR	C,PSET8
+	EX	DE,HL
+	; y de pantalla = 127 - y
+	LD	A,127
+	SUB	E
+	LD	E,A
+	; actualizar la zona
+	PUSH	HL
+	PUSH	DE
+	LD	BC,(BBX0)
+	CALL	CMPS
+	JR	NC,PS1
+	LD	(BBX0),HL
+PS1:	LD	BC,(BBX1)
+	CALL	CMPS2
+	JR	NC,PS2
+	LD	(BBX1),HL
+PS2:	LD	A,(BBY0)
+	CP	E
+	JR	C,PS3
+	LD	A,E
+	LD	(BBY0),A
+PS3:	LD	A,(BBY1)
+	CP	E
+	JR	NC,PS4
+	LD	A,E
+	LD	(BBY1),A
+PS4:	POP	DE
+	POP	HL
+	CALL	PIXADR
+	LD	C,A
+	LD	A,(PACT)
+	CP	1
+	JR	Z,PSON
+	CP	2
+	JR	Z,PSOFF
+	LD	A,(HL)		;invertir
+	XOR	C
+	LD	(HL),A
+	JR	PSET9
+PSON:	LD	A,(HL)
+	OR	C
+	LD	(HL),A
+	JR	PSET9
+PSOFF:	LD	A,C
+	CPL
+	AND	(HL)
+	LD	(HL),A
+	JR	PSET9
+PSET8:	EX	DE,HL
+PSET9:	POP	HL
+	RET
+;
+; CMPS - comparacion con signo: CY si HL < BC
+; CMPS2 - CY si BC < HL
+CMPS:	PUSH	HL
+	LD	A,H
+	XOR	B
+	JP	M,CMPS1
+	OR	A
+	SBC	HL,BC
+	POP	HL
+	RET
+CMPS1:	LD	A,H		;signos distintos: HL < BC si HL es negativo
+	RLCA
+	POP	HL
+	RET
+CMPS2:	PUSH	HL
+	PUSH	BC
+	LD	(TMPW),HL
+	LD	H,B
+	LD	L,C
+	LD	BC,(TMPW)
+	CALL	CMPS
+	POP	BC
+	POP	HL
+	RET
+;
+; VPLOT - VDU 25,k,x;y;
+VPLOT:	LD	A,(QBUF)
+	LD	(DSAVE),A
+	; coordenadas absolutas o relativas
+	LD	HL,(QBUF+1)
+	LD	DE,(QBUF+3)
+	BIT	2,A
+	JR	NZ,VPL1
+	LD	BC,(GX)		;relativas: sumar el cursor
+	ADD	HL,BC
+	EX	DE,HL
+	LD	BC,(GY)
+	ADD	HL,BC
+	EX	DE,HL
+VPL1:	; desplazar los puntos anteriores
+	PUSH	HL
+	PUSH	DE
+	LD	HL,(OGX)
+	LD	(OOGX),HL
+	LD	HL,(OGY)
+	LD	(OOGY),HL
+	LD	HL,(GX)
+	LD	(OGX),HL
+	LD	HL,(GY)
+	LD	(OGY),HL
+	POP	DE
+	POP	HL
+	LD	(GX),HL
+	LD	(GY),DE
+	LD	A,(DSAVE)
+	AND	03H
+	CALL	GACT
+	CALL	BBRST
+	LD	A,(DSAVE)
+	AND	0F8H
+	CP	64
+	JR	C,VPLINE	;0-63: lineas
+	JR	Z,VPPNT		;64-71: punto
+	CP	80
+	JR	Z,VPTRI		;80-87: triangulo lleno
+	CP	96
+	JR	Z,VPRECT	;96-103: rectangulo lleno
+	CP	144
+	JR	Z,VPCIRC	;144-151: circulo
+	CP	152
+	JR	Z,VPCIRF	;152-159: circulo lleno
+	CP	72
+	JR	Z,VPPNT
+	RET
+;
+VPPNT:	CALL	ABSPT
+	CALL	PSET
+	JP	BBFLSH
+;
+; ABSPT - HL,DE = cursor actual mas el origen
+ABSPT:	LD	HL,(GY)
+	LD	DE,(ORGY)
+	ADD	HL,DE
+	EX	DE,HL
+	LD	HL,(GX)
+	LD	BC,(ORGX)
+	ADD	HL,BC
+	RET
+;
+; ABSOLD - HL,DE = punto anterior mas el origen
+ABSOLD:	LD	HL,(OGY)
+	LD	DE,(ORGY)
+	ADD	HL,DE
+	EX	DE,HL
+	LD	HL,(OGX)
+	LD	BC,(ORGX)
+	ADD	HL,BC
+	RET
+;
+VPLINE:	LD	A,(PACT)
+	OR	A
+	RET	Z		;solo mover
+	CALL	ABSOLD
+	LD	(LX0),HL
+	LD	(LY0),DE
+	CALL	ABSPT
+	LD	(LX1),HL
+	LD	(LY1),DE
+	LD	HL,(LY0)	;horizontal: de a bytes
+	OR	A
+	SBC	HL,DE
+	JR	NZ,VPL2
+	LD	(SPY),DE
+	LD	HL,(LX0)
+	LD	(SPX0),HL
+	LD	HL,(LX1)
+	LD	(SPX1),HL
+	CALL	HSPAN
+	JP	BBFLSH
+VPL2:	CALL	LINE
+	JP	BBFLSH
+;
+; LINE - linea de (LX0,LY0) a (LX1,LY1), algoritmo de Bresenham
+LINE:	LD	HL,(LX1)
+	LD	DE,(LX0)
+	OR	A
+	SBC	HL,DE
+	LD	BC,1
+	JP	P,LIN1
+	CALL	NEGHL
+	LD	BC,-1
+LIN1:	LD	(LDX),HL
+	LD	(LSX),BC
+	LD	HL,(LY1)
+	LD	DE,(LY0)
+	OR	A
+	SBC	HL,DE
+	LD	BC,1
+	JP	P,LIN2
+	CALL	NEGHL
+	LD	BC,-1
+LIN2:	CALL	NEGHL		;dy = -|y1-y0|
+	LD	(LDY),HL
+	LD	(LSY),BC
+	LD	DE,(LDX)
+	ADD	HL,DE
+	LD	(LERR),HL	;err = dx + dy
+LIN3:	LD	HL,(LX0)
+	LD	DE,(LY0)
+	CALL	PSET
+	LD	HL,(LX0)
+	LD	DE,(LX1)
+	OR	A
+	SBC	HL,DE
+	JR	NZ,LIN4
+	LD	HL,(LY0)
+	LD	DE,(LY1)
+	OR	A
+	SBC	HL,DE
+	RET	Z
+LIN4:	LD	HL,(LERR)
+	ADD	HL,HL
+	LD	(LE2),HL	;e2 = 2*err
+	LD	BC,(LDY)
+	CALL	CMPS		;e2 >= dy ?
+	JR	C,LIN5
+	LD	HL,(LERR)
+	LD	DE,(LDY)
+	ADD	HL,DE
+	LD	(LERR),HL
+	LD	HL,(LX0)
+	LD	DE,(LSX)
+	ADD	HL,DE
+	LD	(LX0),HL
+LIN5:	LD	HL,(LE2)	;e2 <= dx ?
+	LD	BC,(LDX)
+	CALL	CMPS2		;CY si dx < e2
+	JR	C,LIN3
+	LD	HL,(LERR)
+	LD	DE,(LDX)
+	ADD	HL,DE
+	LD	(LERR),HL
+	LD	HL,(LY0)
+	LD	DE,(LSY)
+	ADD	HL,DE
+	LD	(LY0),HL
+	JR	LIN3
+;
+NEGHL:	PUSH	DE
+	EX	DE,HL
+	LD	HL,0
+	OR	A
+	SBC	HL,DE
+	POP	DE
+	RET
+;
+; HSPAN - linea horizontal en y=SPY desde SPX0 hasta SPX1 (absolutas)
+HSPAN:	LD	HL,(SPX0)
+	LD	DE,(SPX1)
+	CALL	CMPSD		;ordenar
+	JR	NC,HSP1
+	LD	(SPX0),DE
+	LD	(SPX1),HL
+HSP1:	LD	HL,(SPX0)	;recortar a la ventana
+	LD	BC,(GWL)
+	CALL	CMPS
+	JR	NC,HSP2
+	LD	(SPX0),BC
+HSP2:	LD	HL,(SPX1)
+	LD	BC,(GWR)
+	CALL	CMPS2
+	JR	NC,HSP3
+	LD	(SPX1),BC
+HSP3:	LD	A,(PACT)
+	OR	A
+	RET	Z
+	LD	HL,(SPX0)
+	LD	BC,(SPX1)
+	CALL	CMPS2		;vacia despues de recortar?
+	RET	C
+	LD	HL,(SPY)	;fila dentro de la ventana?
+	LD	BC,(GWB)
+	CALL	CMPS
+	RET	C
+	LD	BC,(GWT)
+	CALL	CMPS2
+	RET	C
+	LD	A,127
+	SUB	L
+;
+; FSPAN - linea horizontal rapida, de a bytes, en la fila de pantalla A
+;   desde SPX0 hasta SPX1 (puntos de pantalla, SPX0 <= SPX1), con PACT.
+FSPAN:	LD	(FSY),A
+	LD	E,A		;zona modificada
+	LD	A,(BBY0)
+	CP	E
+	JR	C,FS1
+	LD	A,E
+	LD	(BBY0),A
+FS1:	LD	A,(BBY1)
+	CP	E
+	JR	NC,FS2
+	LD	A,E
+	LD	(BBY1),A
+FS2:	LD	HL,(SPX0)
+	LD	BC,(BBX0)
+	CALL	CMPS
+	JR	NC,FS3
+	LD	(BBX0),HL
+FS3:	LD	HL,(SPX1)
+	LD	BC,(BBX1)
+	CALL	CMPS2
+	JR	NC,FS4
+	LD	(BBX1),HL
+FS4:	LD	HL,(SPX0)
+	LD	A,L
+	AND	07H
+	LD	B,A		;primer bit
+	CALL	SHR3
+	LD	C,L		;primera columna
+	LD	HL,(SPX1)
+	LD	A,L
+	AND	07H
+	LD	D,A		;ultimo bit
+	CALL	SHR3
+	LD	E,L		;ultima columna
+	PUSH	DE
+	LD	L,C
+	LD	H,0
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	LD	A,(FSY)
+	LD	E,A
+	LD	D,80H
+	ADD	HL,DE		;HL -> primer byte
+	POP	DE
+	LD	A,0FFH		;mascara izquierda: bits desde el primero
+	INC	B
+FS5:	DEC	B
+	JR	Z,FS6
+	ADD	A,A
+	JR	FS5
+FS6:	LD	B,A
+	LD	A,D		;mascara derecha: bits hasta el ultimo
+	INC	A
+	PUSH	BC
+	LD	B,A
+	XOR	A
+FS7:	SCF
+	RLA
+	DJNZ	FS7
+	POP	BC
+	LD	D,A
+	LD	A,C
+	CP	E
+	JR	NZ,FS8
+	LD	A,B		;una sola columna
+	AND	D
+	JP	FSAPP
+FS8:	LD	A,B
+	CALL	FSAPP
+	LD	A,E
+	SUB	C
+	DEC	A
+	LD	B,A
+	PUSH	DE
+	LD	DE,128
+	JR	Z,FS10
+FS9:	ADD	HL,DE
+	LD	A,0FFH
+	CALL	FSAPP
+	DJNZ	FS9
+FS10:	ADD	HL,DE
+	POP	DE
+	LD	A,D
+;
+; FSAPP - aplica la accion PACT con la mascara A al byte (HL)
+FSAPP:	PUSH	BC
+	LD	B,A
+	LD	A,(PACT)
+	CP	1
+	JR	Z,FSA1
+	CP	2
+	JR	Z,FSA2
+	LD	A,(HL)
+	XOR	B
+	LD	(HL),A
+	POP	BC
+	RET
+FSA1:	LD	A,(HL)
+	OR	B
+	LD	(HL),A
+	POP	BC
+	RET
+FSA2:	LD	A,B
+	CPL
+	AND	(HL)
+	LD	(HL),A
+	POP	BC
+	RET
+;
+; CMPSD - CY si DE < HL (con signo)
+CMPSD:	PUSH	BC
+	LD	B,D
+	LD	C,E
+	CALL	CMPS2
+	POP	BC
+	RET
+;
+; VPRECT - rectangulo lleno entre el punto anterior y el actual
+VPRECT:	CALL	ABSOLD
+	LD	(LX0),HL
+	LD	(LY0),DE
+	CALL	ABSPT
+	LD	(LX1),HL
+	LD	(LY1),DE
+	LD	HL,(LY0)
+	LD	DE,(LY1)
+	CALL	CMPSD
+	JR	NC,VPR1
+	LD	(LY0),DE
+	LD	(LY1),HL
+VPR1:	LD	HL,(LY0)
+	LD	(SPY),HL
+VPR2:	LD	HL,(LX0)
+	LD	(SPX0),HL
+	LD	HL,(LX1)
+	LD	(SPX1),HL
+	CALL	HSPAN
+	LD	HL,(SPY)
+	LD	DE,(LY1)
+	OR	A
+	SBC	HL,DE
+	JR	Z,VPR3
+	LD	HL,(SPY)
+	INC	HL
+	LD	(SPY),HL
+	JR	VPR2
+VPR3:	JP	BBFLSH
+;
+; VPCIRC / VPCIRF - circulo con centro en el punto anterior y
+;   radio igual a la distancia hasta el punto actual
+VPCIRC:	XOR	A
+	JR	VPC0
+VPCIRF:	LD	A,1
+VPC0:	LD	(DSAVE),A
+	CALL	ABSOLD
+	LD	(CXX),HL
+	LD	(CYY),DE
+	CALL	ABSPT
+	LD	BC,(CXX)	;dx
+	OR	A
+	SBC	HL,BC
+	PUSH	HL
+	EX	DE,HL
+	LD	BC,(CYY)
+	OR	A
+	SBC	HL,BC		;dy
+	CALL	SQR16		;DEHL = dy*dy
+	PUSH	DE
+	PUSH	HL
+	POP	BC		;guardar dy^2 en (pila)
+	POP	DE
+	EX	(SP),HL		;HL = dx
+	PUSH	DE
+	PUSH	BC
+	CALL	SQR16		;DEHL = dx*dx
+	POP	BC
+	ADD	HL,BC
+	EX	DE,HL
+	POP	BC
+	ADC	HL,BC
+	EX	DE,HL		;DEHL = dx^2 + dy^2
+	POP	BC		;descartar
+	CALL	ISQRT		;HL = raiz
+	LD	(CRAD),HL
+	; algoritmo del punto medio
+	LD	HL,0
+	LD	(LX0),HL	;x = 0
+	LD	HL,(CRAD)
+	LD	(LY0),HL	;y = r
+	LD	DE,1
+	EX	DE,HL
+	OR	A
+	SBC	HL,DE
+	LD	(CDD),HL	;d = 1 - r
+VPC1:	LD	HL,(LX0)	;mientras x <= y
+	LD	BC,(LY0)
+	CALL	CMPS2
+	JP	C,BBFLSH
+	CALL	C8PTS
+	LD	HL,(CDD)
+	BIT	7,H
+	JR	Z,VPC2
+	LD	HL,(LX0)	;d < 0: d += 2x + 3
+	ADD	HL,HL
+	LD	DE,3
+	ADD	HL,DE
+	LD	DE,(CDD)
+	ADD	HL,DE
+	LD	(CDD),HL
+	JR	VPC3
+VPC2:	LD	HL,(LX0)	;d += 2(x - y) + 5
+	LD	DE,(LY0)
+	OR	A
+	SBC	HL,DE
+	ADD	HL,HL
+	LD	DE,5
+	ADD	HL,DE
+	LD	DE,(CDD)
+	ADD	HL,DE
+	LD	(CDD),HL
+	LD	HL,(LY0)
+	DEC	HL
+	LD	(LY0),HL
+VPC3:	LD	HL,(LX0)
+	INC	HL
+	LD	(LX0),HL
+	JR	VPC1
+;
+; C8PTS - puntos simetricos (o lineas si es lleno). LX0=x, LY0=y
+C8PTS:	LD	A,(DSAVE)
+	OR	A
+	JR	NZ,C8F
+	LD	HL,(LX0)
+	LD	DE,(LY0)
+	CALL	C4PTS
+	LD	HL,(LY0)
+	LD	DE,(LX0)
+C4PTS:	LD	(LX1),HL
+	LD	(LY1),DE
+	LD	BC,(CXX)	;(cx+a, cy+b)
+	ADD	HL,BC
+	PUSH	HL
+	EX	DE,HL
+	LD	BC,(CYY)
+	ADD	HL,BC
+	EX	DE,HL
+	CALL	PSET
+	POP	HL		;(cx+a, cy-b)
+	LD	DE,(CYY)
+	PUSH	HL
+	LD	BC,(LY1)
+	EX	DE,HL
+	OR	A
+	SBC	HL,BC
+	EX	DE,HL
+	CALL	PSET
+	POP	HL
+	LD	HL,(CXX)	;(cx-a, cy+b)
+	LD	BC,(LX1)
+	OR	A
+	SBC	HL,BC
+	PUSH	HL
+	LD	DE,(CYY)
+	LD	BC,(LY1)
+	EX	DE,HL
+	ADD	HL,BC
+	EX	DE,HL
+	CALL	PSET
+	POP	HL		;(cx-a, cy-b)
+	LD	DE,(CYY)
+	LD	BC,(LY1)
+	EX	DE,HL
+	OR	A
+	SBC	HL,BC
+	EX	DE,HL
+	JP	PSET
+;
+C8F:	LD	HL,(LX0)
+	LD	DE,(LY0)
+	CALL	C2SP
+	LD	HL,(LY0)
+	LD	DE,(LX0)
+C2SP:	; lineas de cx-a a cx+a en cy+b y cy-b
+	PUSH	DE
+	LD	BC,(CXX)
+	PUSH	HL
+	ADD	HL,BC
+	LD	(SPX1),HL
+	POP	DE
+	LD	H,B
+	LD	L,C
+	OR	A
+	SBC	HL,DE
+	LD	(SPX0),HL
+	POP	DE
+	PUSH	DE
+	LD	HL,(CYY)
+	ADD	HL,DE
+	LD	(SPY),HL
+	LD	HL,(SPX0)
+	PUSH	HL
+	LD	HL,(SPX1)
+	PUSH	HL
+	CALL	HSPAN
+	POP	HL
+	LD	(SPX1),HL
+	POP	HL
+	LD	(SPX0),HL
+	POP	DE
+	LD	HL,(CYY)
+	OR	A
+	SBC	HL,DE
+	LD	(SPY),HL
+	JP	HSPAN
+;
+; SQR16 - DEHL = HL * HL (HL con signo)
+SQR16:	BIT	7,H
+	CALL	NZ,NEGHL
+	LD	B,H
+	LD	C,L
+	EX	DE,HL		;DE = a, BC = a
+; MUL16 - DEHL = DE * BC (sin signo)
+MUL16:	LD	HL,0
+	LD	A,16
+MU1:	ADD	HL,HL
+	EX	DE,HL
+	ADC	HL,HL
+	EX	DE,HL
+	JR	NC,MU2
+	ADD	HL,BC
+	JR	NC,MU2
+	INC	DE
+MU2:	DEC	A
+	JR	NZ,MU1
+	RET
+;
+; ISQRT - HL = raiz cuadrada entera de DEHL
+ISQRT:	LD	(TRX),HL
+	LD	(TRX+2),DE
+	LD	HL,0		;resultado
+	LD	(TRX+4),HL
+	LD	BC,8000H	;bit de prueba
+ISQ1:	LD	HL,(TRX+4)	;r = res | bit
+	LD	A,H
+	OR	B
+	LD	H,A
+	LD	A,L
+	OR	C
+	LD	L,A
+	PUSH	BC
+	PUSH	HL
+	LD	D,H
+	LD	E,L
+	LD	B,H
+	LD	C,L
+	CALL	MUL16		;DEHL = r*r
+	LD	BC,(TRX+2)	;comparar con el valor
+	EX	DE,HL
+	OR	A
+	SBC	HL,BC
+	JR	C,ISQ2		;r*r < valor (parte alta)
+	JR	NZ,ISQ3		;mayor
+	EX	DE,HL
+	LD	BC,(TRX)
+	OR	A
+	SBC	HL,BC
+	JR	Z,ISQ2
+	JR	NC,ISQ3
+ISQ2:	POP	HL		;r*r <= valor: aceptar el bit
+	LD	(TRX+4),HL
+	JR	ISQ4
+ISQ3:	POP	HL
+ISQ4:	POP	BC
+	SRL	B
+	RR	C
+	LD	A,B
+	OR	C
+	JR	NZ,ISQ1
+	LD	HL,(TRX+4)
+	RET
+;
+; VPTRI - triangulo lleno: los dos puntos anteriores y el actual
+VPTRI:	CALL	ABSPT
+	LD	(TRX),HL
+	LD	(TRY),DE
+	CALL	ABSOLD
+	LD	(TRX+2),HL
+	LD	(TRY+2),DE
+	LD	HL,(OOGY)
+	LD	DE,(ORGY)
+	ADD	HL,DE
+	LD	(TRY+4),HL
+	LD	HL,(OOGX)
+	LD	DE,(ORGX)
+	ADD	HL,DE
+	LD	(TRX+4),HL
+	; ordenar por y (de menor a mayor)
+	CALL	TSORT
+	CALL	TSORT
+	; recorrer filas de y0 a y2
+	LD	HL,(TRY)
+	LD	(SPY),HL
+VPT1:	; x en el lado largo (v0-v2)
+	XOR	A		;lado 0-2
+	CALL	EDGEX
+	LD	(SPX0),HL
+	LD	HL,(SPY)	;lado corto: 0-1 o 1-2
+	LD	BC,(TRY+2)
+	CALL	CMPS
+	LD	A,1		;lado 0-1
+	JR	C,VPT2
+	LD	A,2		;lado 1-2
+VPT2:	CALL	EDGEX
+	LD	(SPX1),HL
+	CALL	HSPAN
+	LD	HL,(SPY)
+	LD	DE,(TRY+4)
+	OR	A
+	SBC	HL,DE
+	JP	Z,BBFLSH
+	LD	HL,(SPY)
+	INC	HL
+	LD	(SPY),HL
+	JR	VPT1
+;
+; TSORT - una pasada de ordenamiento de los 3 vertices por y
+TSORT:	LD	HL,(TRY)
+	LD	BC,(TRY+2)
+	CALL	CMPS2		;CY si y1 < y0
+	JR	NC,TS1
+	CALL	SWP01
+TS1:	LD	HL,(TRY+2)
+	LD	BC,(TRY+4)
+	CALL	CMPS2
+	RET	NC
+	; intercambiar 1 y 2
+	LD	HL,(TRX+2)
+	LD	DE,(TRX+4)
+	LD	(TRX+2),DE
+	LD	(TRX+4),HL
+	LD	HL,(TRY+2)
+	LD	DE,(TRY+4)
+	LD	(TRY+2),DE
+	LD	(TRY+4),HL
+	RET
+SWP01:	LD	HL,(TRX)
+	LD	DE,(TRX+2)
+	LD	(TRX),DE
+	LD	(TRX+2),HL
+	LD	HL,(TRY)
+	LD	DE,(TRY+2)
+	LD	(TRY),DE
+	LD	(TRY+2),HL
+	RET
+;
+; EDGEX - x del lado A (0: v0-v2, 1: v0-v1, 2: v1-v2) en y = SPY
+EDGEX:	OR	A
+	JR	NZ,EDX1
+	LD	HL,(TRX)	;v0-v2
+	LD	(LX0),HL
+	LD	HL,(TRY)
+	LD	(LY0),HL
+	LD	HL,(TRX+4)
+	LD	(LX1),HL
+	LD	HL,(TRY+4)
+	LD	(LY1),HL
+	JR	EDX3
+EDX1:	CP	1
+	JR	NZ,EDX2
+	LD	HL,(TRX)	;v0-v1
+	LD	(LX0),HL
+	LD	HL,(TRY)
+	LD	(LY0),HL
+	LD	HL,(TRX+2)
+	LD	(LX1),HL
+	LD	HL,(TRY+2)
+	LD	(LY1),HL
+	JR	EDX3
+EDX2:	LD	HL,(TRX+2)	;v1-v2
+	LD	(LX0),HL
+	LD	HL,(TRY+2)
+	LD	(LY0),HL
+	LD	HL,(TRX+4)
+	LD	(LX1),HL
+	LD	HL,(TRY+4)
+	LD	(LY1),HL
+EDX3:	; x = x0 + (y - y0) * (x1 - x0) / (y1 - y0)
+	LD	HL,(LY1)
+	LD	DE,(LY0)
+	OR	A
+	SBC	HL,DE
+	JR	NZ,EDX4
+	LD	HL,(LX0)	;lado horizontal
+	RET
+EDX4:	LD	(LDY),HL
+	LD	HL,(SPY)
+	OR	A
+	SBC	HL,DE
+	LD	(LE2),HL	;y - y0
+	LD	HL,(LX1)
+	LD	DE,(LX0)
+	OR	A
+	SBC	HL,DE
+	LD	(LDX),HL	;x1 - x0
+	; producto con signo / divisor con signo
+	LD	A,H
+	LD	DE,(LE2)
+	XOR	D
+	LD	(LERR),A	;signo del producto
+	BIT	7,H
+	CALL	NZ,NEGHL
+	PUSH	HL
+	LD	HL,(LE2)
+	BIT	7,H
+	CALL	NZ,NEGHL
+	EX	DE,HL
+	POP	BC
+	CALL	MUL16		;DEHL = |dy*dx|
+	LD	BC,(LDY)
+	LD	A,(LERR)
+	XOR	B
+	LD	(LERR),A	;signo final
+	BIT	7,B
+	JR	Z,EDX5
+	PUSH	HL
+	LD	H,B
+	LD	L,C
+	CALL	NEGHL
+	LD	B,H
+	LD	C,L
+	POP	HL
+EDX5:	CALL	DIV32		;HL = DEHL / BC
+	LD	A,(LERR)
+	BIT	7,A
+	CALL	NZ,NEGHL
+	LD	DE,(LX0)
+	ADD	HL,DE
+	RET
+;
+; DIV32 - HL = DEHL / BC (sin signo, resultado de 16 bits)
+DIV32:	LD	A,32
+	PUSH	IX
+	LD	IX,0		;resto en IX
+DV1:	ADD	HL,HL
+	EX	DE,HL
+	ADC	HL,HL
+	EX	DE,HL
+	PUSH	HL
+	PUSH	IX
+	POP	HL
+	ADC	HL,HL
+	PUSH	HL
+	POP	IX
+	OR	A
+	SBC	HL,BC
+	JR	C,DV2
+	PUSH	HL
+	POP	IX
+	POP	HL
+	INC	L
+	JR	DV3
+DV2:	POP	HL
+DV3:	DEC	A
+	JR	NZ,DV1
+	POP	IX
+	RET
+;
+; ------------------------------------------------------------------
+; OSWORD y OSBYTE del video
+; ------------------------------------------------------------------
+;
+; VWORD - A = 9: leer punto (bloque: x, y, resultado)
+;         A = 10: leer la definicion de un caracter
+VWORD:	PUSH	AF
+	CALL	MAPV
+	POP	AF
+	PUSH	HL
+	POP	IX
+	CP	10
+	JR	Z,VWD10
+	CP	9
+	RET	NZ
+	LD	L,(IX+0)
+	LD	H,(IX+1)
+	LD	BC,(ORGX)
+	ADD	HL,BC
+	LD	E,(IX+2)
+	LD	D,(IX+3)
+	EX	DE,HL
+	LD	BC,(ORGY)
+	ADD	HL,BC
+	EX	DE,HL		;HL = x, DE = y absolutos
+	LD	BC,(GWL)	;dentro de la ventana?
+	CALL	CMPS
+	JR	C,VWD9
+	LD	BC,(GWR)
+	CALL	CMPS2
+	JR	C,VWD9
+	EX	DE,HL
+	LD	BC,(GWB)
+	CALL	CMPS
+	JR	C,VWD9
+	LD	BC,(GWT)
+	CALL	CMPS2
+	JR	C,VWD9
+	EX	DE,HL
+	LD	A,127
+	SUB	E
+	LD	E,A
+	CALL	PIXADR
+	AND	(HL)
+	JR	Z,VWD8
+	LD	A,1
+VWD8:	LD	(IX+4),A
+	RET
+VWD9:	LD	(IX+4),0FFH
+	RET
+VWD10:	LD	L,(IX+0)	;caracter
+	LD	H,0
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	LD	DE,UFONT
+	ADD	HL,DE
+	LD	B,8
+VWD11:	LD	A,(HL)		;devolver con el bit 7 a la izquierda
+	LD	C,0
+	PUSH	BC
+	LD	B,8
+VWD12:	RRA
+	RL	C
+	DJNZ	VWD12
+	LD	A,C
+	POP	BC
+	INC	IX
+	LD	(IX+0),A
+	INC	HL
+	DJNZ	VWD11
+	RET
+;
+; VBYTE - A = 134: L = POS, H = VPOS.  A = 135: L = caracter, H = modo
+VBYTE:	PUSH	AF
+	CALL	MAPV
+	POP	AF
+	CP	135
+	JR	Z,VBY135
+	LD	A,(TWL)
+	LD	B,A
+	LD	A,(TX)
+	SUB	B
+	LD	L,A
+	LD	A,(TWT)
+	LD	B,A
+	LD	A,(TY)
+	SUB	B
+	LD	H,A
+	RET
+VBY135:	LD	A,(TY)
+	LD	L,A
+	LD	H,0
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	LD	A,(TX)
+	LD	E,A
+	LD	D,0
+	ADD	HL,DE
+	LD	DE,CHMAP
+	ADD	HL,DE
+	LD	L,(HL)
+	LD	A,(VMODE)
+	LD	H,A
+	RET
+;
+; VSTATE - A = 0: L = columnas, H = modo
+VSTATE:	CALL	MAPV
+	LD	A,(NCOLS)
+	LD	L,A
+	LD	A,(VMODE)
+	LD	H,A
+	RET
+;
+; ------------------------------------------------------------------
+; Fuente de 5x8 (Spleen 5x8, (C) Frederic Cambus, licencia BSD de
+; 2 clausulas) con caracteres graficos propios en 80H-9FH.
+; Guardada con el bit 0 = punto de la izquierda.
+; ------------------------------------------------------------------
+;
+ROMFNT:
+	INCLUDE	font.inc
+;
+	END

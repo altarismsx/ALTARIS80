@@ -1,0 +1,74 @@
+# AYUDA - guía del BASIC y de los comandos (lee AYUDA.TXT del disco)
+REM AYUDA - (C) 2026 Altaris Software
+ON ERROR GOTO {error}
+MODE 0
+*ESC OFF
+VDU 23,1,0;0;0;0;
+MO%=500
+DIM PL%(MO%),TI$(20),TS%(21)
+T$=STRING$(255," "):T$=""
+F%=OPENIN "AYUDA.TXT"
+IF F%=0 THEN PRINT "No encuentro AYUDA.TXT":WAIT 300:OSCLI "ESC ON":CHAIN "MENU"
+PRINT TAB(0,15);"Leyendo la ayuda...";
+NL%=0:NT%=0
+WHILE NOT EOF#F% AND NL%<MO%
+P%=PTR#F%:T$=GET$#F%
+IF LEFT$(T$,1)="@" AND NT%<20 THEN NT%=NT%+1:TI$(NT%)=MID$(T$,2):TS%(NT%)=NL%+1 ELSE NL%=NL%+1:PL%(NL%)=P%
+ENDWHILE
+TS%(NT%+1)=NL%+1
+S%=1
+REPEAT
+S%=FNmenu(S%)
+IF S%>0 THEN PROCtema(S%)
+UNTIL S%=0
+CLOSE#F%
+OSCLI "ESC ON"
+CHAIN "MENU"
+#
+DEF FNmenu(S%)
+LOCAL I%,K%
+CLS
+PRINT TAB(24,0);"A Y U D A";
+PRINT TAB(0,1);STRING$(64,CHR$136);
+FOR I%=1 TO NT%:PROCopcion(I%,FALSE):NEXT
+PRINT TAB(0,15);"Flechas: elegir un tema   Enter: leerlo   Volver: salir";
+REPEAT
+PROCopcion(S%,TRUE)
+K%=GET
+PROCopcion(S%,FALSE)
+IF K%=139 THEN S%=(S%+NT%-2) MOD NT%+1
+IF K%=138 THEN S%=S% MOD NT%+1
+IF K%>=49 AND K%<49+NT% AND K%<58 THEN S%=K%-48:K%=13
+UNTIL K%=13 OR K%=27 OR K%=128
+IF K%<>13 THEN =0
+=S%
+#
+DEF PROCopcion(I%,M%)
+IF M% THEN COLOUR 129:COLOUR 0
+PRINT TAB(12,2+I%);" ";I%;"  ";TI$(I%);SPC(34-LEN(TI$(I%)));
+COLOUR 128:COLOUR 1
+ENDPROC
+#
+REM Muestra un tema; flechas y Fn+flechas para moverse
+DEF PROCtema(N%)
+LOCAL A%,B%,TL%,K%,R%
+A%=TS%(N%):B%=TS%(N%+1)-1:TL%=A%
+REPEAT
+CLS
+PTR#F%=PL%(TL%)
+FOR R%=0 TO 14
+IF TL%+R%<=B% THEN T$=GET$#F%:PRINT TAB(0,R%);LEFT$(T$,63);
+NEXT
+COLOUR 129:COLOUR 0
+PRINT TAB(0,15);" ";TI$(N%);" ";
+COLOUR 128:COLOUR 1
+IF B%-A%>=15 THEN PRINT TAB(36,15);"Flechas: más   Volver: temas"; ELSE PRINT TAB(43,15);"Volver: temas";
+K%=GET
+IF (K%=138 OR K%=141 OR K%=32) AND TL%+15<=B% THEN TL%=TL%+13
+IF (K%=139 OR K%=140) AND TL%>A% THEN TL%=TL%-13:IF TL%<A% THEN TL%=A%
+UNTIL K%=27 OR K%=128 OR K%=13
+ENDPROC
+#
+{error} CLOSE#0:OSCLI "ESC ON"
+IF ERR=17 THEN CHAIN "MENU"
+MODE 0:REPORT:PRINT " (línea ";ERL;")":END

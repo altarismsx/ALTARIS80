@@ -1,0 +1,213 @@
+﻿ALTARIS 80 - CÓMO FUNCIONA POR DENTRO
+Para curiosos, docentes y alumnos
+Carlos de la Fuente - Altaris Software, 2026
+======================================================================
+
+Este texto explica qué hay adentro de la MailStation, cómo se logra
+cambiarle el programa sin abrirla, cómo hablan la PC, el Arduino y la
+MailStation, y cómo está hecho ALTARIS 80. No hace falta para
+instalarlo (para eso está MANUAL.txt).
+
+
+1. LA MÁQUINA
+-------------
+La MailStation (CIDCO, vendida en la Argentina por Telefónica Equipos)
+es, por dentro, una computadora de 8 bits:
+
+  Procesador     Z80 a 12 MHz (el mismo de las MSX, la Sinclair ZX
+                 Spectrum o la Amstrad CPC, pero más rápido)
+  RAM            128 KB
+  Flash de programa   1 MB (chip Am29F080): acá vive el sistema
+  Flash de datos      512 KB (chip 28SF040): acá guardaba los mails;
+                      en ALTARIS 80 es el disco interno
+  Pantalla       LCD de 320 x 128 puntos, manejada por dos
+                 controladores (mitad izquierda y mitad derecha)
+  Teclado        completo, más 5 teclas de función bajo la pantalla
+  Puerto paralelo   el conector DB25 de atrás, para la impresora
+  Módem          para la línea de teléfono (ALTARIS no lo usa)
+
+La memoria "flash" es como la de un pendrive: no se borra al apagar,
+pero para escribirla hay que mandarle órdenes especiales y se borra de a
+bloques grandes (64 KB en la de programa).
+
+
+2. EL MAPA DE MEMORIA
+---------------------
+El Z80 solo puede "ver" 64 KB a la vez. La MailStation divide esos 64 KB
+en cuatro ventanas de 16 KB:
+
+  0000-3FFF   siempre la primera página de la flash de programa
+  4000-7FFF   se puede poner cualquier cosa (flash, RAM, pantalla...)
+  8000-BFFF   se puede poner cualquier cosa
+  C000-FFFF   siempre la primera página de la RAM
+
+Para ver otra parte de la memoria, el programa escribe en unos puertos
+del procesador cuál "página" quiere en la ventana 4000 u 8000. Así se
+llega al megabyte entero de a pedacitos de 16 KB. Hasta la pantalla se
+maneja así: se pone el controlador del LCD en una ventana y se escribe
+en esas direcciones como si fuera memoria.
+
+Por este mapa la MailStation no puede correr CP/M: CP/M necesita RAM en
+la dirección 0000, y acá esa ventana es fija a la flash. En una MSX, en
+cambio, las cuatro ventanas se pueden cambiar (los "slots"), y por eso
+corre MSX-DOS.
+
+
+3. CÓMO SE INSTALA SIN ABRIRLA
+------------------------------
+El truco tiene cuatro escalones. Cada uno sirve para subir al siguiente:
+
+  1. El editor escondido. La MailStation trae un menú de diagnóstico de
+     fábrica (Fn + Shift + T al prender) con un editor hexadecimal que
+     puede escribir la flash de datos. La flash de programa no.
+
+  2. El Loader. Con ese editor se tipea a mano un programa de 97 bytes
+     y se lo anota como "aplicación". El sistema original lo muestra en
+     su menú y lo ejecuta. El Loader recibe bytes por el puerto
+     paralelo, los pone en la RAM (desde 8000H) y salta a ellos.
+
+  3. El instalador. La PC le manda al Loader INSTALAR.BIN (1,7 KB). Ese
+     programa ya es nuestro y corre solo en la RAM, sin el sistema
+     original: muestra "ALTARIS 80 - INSTALADOR" y obedece órdenes de
+     la PC (leer, borrar y grabar la flash).
+
+  4. La grabación. La PC le pregunta qué chip de flash tiene (el chip
+     responde a una secuencia de órdenes con su fabricante y modelo:
+     AMD, D5), borra los bloques, graba ALTARIS80.BIN en páginas de
+     16 KB, comprueba cada página con una suma y comparando byte a
+     byte, y reinicia. Desde ese momento la máquina arranca con ALTARIS.
+
+Como el instalador también queda guardado dentro de ALTARIS (*ACTUALIZAR
+o Fn + Volver al prender), después ya no hace falta el Loader.
+
+
+4. EL CABLE: 3 BITS POR VEZ
+---------------------------
+El puerto de impresora no fue pensado para recibir datos. De la
+MailStation hacia afuera hay 8 cables de datos (pines 2 a 9); hacia
+adentro solo hay 5 cables de "estado" de la impresora (pines 10, 11,
+12, 13 y 15). Con eso se arma un protocolo propio, el de las
+herramientas de joshua stein y de la comunidad de la MailStation:
+
+  - En cada dirección se usan 5 cables: 3 de datos, 1 de "strobe"
+    (¡ahí va!) y 1 de "busy/ack" (ocupado / recibido).
+  - Cada byte viaja en tres partes de 3, 3 y 2 bits ("tribbles").
+  - Cada parte se manda con un apretón de manos: el que recibe avisa
+    que está listo, el que manda pone los 3 bits y levanta el strobe,
+    el que recibe los lee y confirma, el que manda baja el strobe.
+
+  Arduino   DB25        sentido
+  D2-D4  <-- pines 2-4   3 bits de datos de la MailStation
+  D5     <-- pin 5       la MailStation confirma (o avisa ocupada)
+  D6     <-- pin 6       strobe de la MailStation
+  D11, D10, D9 --> pines 15, 13, 12   3 bits de datos hacia la MailStation
+  D7     --> pin 10      el Arduino avisa ocupado / confirma
+  D8     --> pin 11      strobe del Arduino
+  GND    --- pin 25      masa común
+
+Como las PC modernas ya no tienen puerto paralelo, el Arduino hace de
+traductor: con la PC habla por USB (115200 baudios, órdenes de una
+letra: P probar, S mandar al Loader, W escribir, R leer, Q probar
+cables) y con la MailStation habla con el protocolo de 3 bits. Es
+lento comparado con un cable USB, pero alcanza para grabar el sistema
+completo (240 KB) en unos minutos.
+
+
+5. LA FALLA QUE MÁS COSTÓ ENCONTRAR (una lección de electrónica)
+----------------------------------------------------------------
+En el emulador todo andaba. En la máquina real, el instalador llegaba
+entero, pero su respuesta nunca volvía. La prueba de cables decía que
+los 11 cables estaban bien.
+
+La causa: el Arduino cambia sus salidas de a una (con digitalWrite,
+unos 4 microsegundos cada una), no todas juntas como el puerto de una
+PC. Al terminar de mandar un byte, durante unos 15 microsegundos el
+cable del pin 10 quedaba en "listo para recibir" antes de volver a
+"ocupado". La MailStation, que a 12 MHz contesta en unos 10
+microsegundos, alcanzaba a verlo y mandaba la primera parte de la
+respuesta cuando el Arduino todavía no escuchaba. Esa parte se perdía.
+
+Es lo que en electrónica y programación se llama una "condición de
+carrera" (race condition): dos partes que dependen de quién llega
+primero. La solución fue cambiar el orden: el Arduino mantiene el pin
+10 en "ocupado" todo el tiempo mientras manda, y solo lo baja cuando de
+verdad empieza a escuchar (MS_Link versión 4).
+
+Para encontrarla, el simulador del Arduino tuvo que imitar ese cambio
+de a una salida por vez: ahí apareció exactamente el mismo error.
+
+
+6. OTRO DETALLE DEL HARDWARE: EL BOTÓN DE ENCENDIDO
+---------------------------------------------------
+El botón de encendido prende la máquina por hardware mientras está
+apretado. Si el programa apaga en el momento de apretarlo, el mismo
+botón la vuelve a prender, y parece que se reinicia. ALTARIS hace lo
+mismo que el firmware original: al apretar apaga la pantalla, espera a
+que se suelte el botón y recién ahí manda el pulso de apagado.
+
+
+7. ALTARIS 80 POR DENTRO
+------------------------
+Todo está escrito en lenguaje ensamblador del Z80, salvo los juegos y
+utilidades, que están en BASIC. La flash de programa queda así:
+
+  página 0     núcleo: arranque, interrupciones (64 por segundo),
+               teclado, reloj, cambio de páginas y copia a la pantalla
+  página 4     el intérprete de BASIC (BBC BASIC Z80 v5 de R. T.
+               Russell, adaptado: mensajes en castellano, teclado,
+               pantalla y disco de la MailStation)
+  página 5     video: texto de 64 x 16 o 40 x 16, gráficos de 320 x 128,
+               códigos VDU como las máquinas Acorn
+  página 6     disco: sistema de archivos y transferencias con la PC
+  página 7     pantalla de arranque (logo y prueba de memoria)
+  páginas 8+   disco de aplicaciones, de solo lectura (los juegos,
+               las utilidades, la ayuda y el instalador)
+
+El disco interno usa la flash de datos (512 KB, en sectores de 256
+bytes) con un sistema de archivos propio, parecido al de los disquetes
+de MS-DOS: un "superbloque" que lo identifica, una tabla (FAT) que dice
+qué sector sigue a cuál, un directorio de hasta 128 archivos y el resto
+para datos. La tabla y el directorio se copian a la RAM al arrancar y se
+escriben en la flash solo cuando algo cambia, para gastarla menos. El
+primer y el último sector no se tocan: tienen datos de fábrica, como el
+número de serie.
+
+El menú, los juegos y las utilidades son programas de BASIC comunes:
+están en la carpeta "programas" y se pueden leer, cambiar y volver a
+mandar a la máquina.
+
+
+8. ARCHIVOS DEL CÓDIGO FUENTE (carpeta fuente/src)
+--------------------------------------------------
+  core.mac       núcleo (página 0)
+  msos.mac       el "sistema operativo" del BASIC: comandos *, teclado,
+                 pantalla y disco (basado en CMOS.Z80 de R. T. Russell)
+  vdu.mac        video
+  fs.mac         disco interno, disco de aplicaciones y transferencias
+  boot.mac       pantalla de arranque
+  update.mac     modo actualización (*ACTUALIZAR)
+  instalar.mac   el instalador que corre en la RAM
+  cables.mac     la prueba de cables
+  *.Z80          el intérprete BBC BASIC (R. T. Russell), con los
+                 cambios marcados "ALTARIS"
+  defs.inc, errores.inc, font.inc, logo.inc   definiciones, mensajes,
+                 letras y logo
+
+En fuente/tools está el armado (build.py) y el convertidor de programas
+de BASIC (bbcbasic.py). El programa de la PC está en la carpeta pc y el
+del Arduino en MS_Link.
+
+
+9. IDEAS PARA UNA CLASE
+-----------------------
+  - Escribir un programa en BASIC en la máquina, grabarlo en el disco y
+    pasarlo a la PC con *ENVIAR.
+  - Abrir programas/PULSENOID.bas en la PC, cambiar la velocidad de la
+    bola o el tamaño de la nave y mandarlo con ENVIAR.BAT.
+  - Contar los bytes del Loader y seguir qué hace cada parte
+    (loader.asm de joshua stein).
+  - Dibujar el apretón de manos del protocolo de 3 bits en un diagrama
+    de tiempos, y ver dónde estaba la condición de carrera.
+  - Comparar el mapa de memoria con el de una MSX o una ZX Spectrum.
+  - Discutir: ¿cuántas cosas que tiramos tienen adentro una computadora
+    que todavía funciona?

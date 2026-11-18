@@ -1,0 +1,297 @@
+	TITLE	ALTARIS 80 - PRUEBA DE CABLES (CORRE EN LA RAM DESDE 8000H)
+;
+; Lo carga el Loader del firmware original. Copia sin parar las 5 lineas
+; que llegan de la PC (estado del puerto paralelo) a las 5 lineas que van
+; a la PC (datos), y muestra en la pantalla lo que llega:
+;
+;   llega de la PC (puerto 21H)        sale a la PC (puerto 2DH)
+;   pin 15 (bit 3)              ->     pin 2 (bit 0)
+;   pin 13 (bit 4)              ->     pin 3 (bit 1)
+;   pin 12 (bit 5)              ->     pin 4 (bit 2)
+;   pin 10 (bit 6)              ->     pin 5 (bit 3)
+;   pin 11 (bit 7)              ->     pin 6 (bit 4)
+;
+; La PC (altaris_pc.py cables) pone combinaciones en sus salidas y lee lo
+; que vuelve: asi sabe que cable no llega.
+;
+; Despues, si la PC deja fijo 15H y luego 0AH, pasa a la prueba de
+; comunicacion: recibe bytes con el protocolo de 3 bits y los devuelve,
+; con las mismas rutinas que el instalador. Se sale con el boton RESET.
+;
+	.Z80
+	ASEG
+	ORG	8000H
+;
+PMISC2	EQU	02H
+PIRQ	EQU	03H
+PSLAPG	EQU	05H
+PSLADV	EQU	06H
+PLPTST	EQU	21H
+PLPTDIR	EQU	2CH
+PLPTDAT	EQU	2DH
+DEVLCDL	EQU	2
+DEVLCDR	EQU	4
+P2INIT	EQU	87H
+;
+INICIO:	DI
+	LD	SP,0C000H
+	LD	A,0FFH
+	OUT	(PLPTDIR),A
+	LD	A,P2INIT
+	OUT	(PMISC2),A
+	XOR	A
+	OUT	(PIRQ),A
+	OUT	(PLPTDAT),A
+	CALL	CLS
+	LD	DE,0105H
+	LD	HL,MTIT
+	CALL	PRAT
+	LD	DE,0303H
+	LD	HL,MAV1
+	CALL	PRAT
+	LD	DE,0603H
+	LD	HL,MPIN
+	CALL	PRAT
+	LD	DE,0703H
+	LD	HL,MLLE
+	CALL	PRAT
+	LD	DE,0C03H
+	LD	HL,MRES
+	CALL	PRAT
+;
+BUCLE:	IN	A,(PLPTST)
+	LD	B,A
+	RRCA			;bits 3-7 -> bits 0-4
+	RRCA
+	RRCA
+	AND	1FH
+	OUT	(PLPTDAT),A
+	LD	HL,PREV		;igual a la vuelta anterior = estable
+	CP	(HL)
+	LD	(HL),A
+	JR	NZ,MOSTRAR
+	LD	HL,ESTAB
+	CP	(HL)
+	JR	Z,MOSTRAR	;ya era el valor estable
+	LD	C,A
+	LD	A,(HL)
+	LD	(HL),C
+	CP	15H		;15H y despues 0AH: prueba de comunicacion
+	JR	NZ,MOSTRAR
+	LD	A,C
+	CP	0AH
+	JR	Z,ECO
+MOSTRAR:	LD	A,B		;mostrar: pin 10 = bit 6
+	LD	C,40H
+	LD	E,15
+	CALL	BIT1
+	LD	C,80H		;pin 11 = bit 7
+	LD	E,20
+	CALL	BIT1
+	LD	C,20H		;pin 12 = bit 5
+	LD	E,25
+	CALL	BIT1
+	LD	C,10H		;pin 13 = bit 4
+	LD	E,30
+	CALL	BIT1
+	LD	C,08H		;pin 15 = bit 3
+	LD	E,35
+	CALL	BIT1
+	JR	BUCLE
+;
+; ---------------- prueba de comunicacion ----------------
+;
+ECO:	LD	DE,0903H
+	LD	HL,MECO
+	CALL	PRAT
+ECO1:	XOR	A		;listos para recibir
+	OUT	(PLPTDAT),A
+	CALL	RXB
+	CALL	TXB		;devolver el mismo byte
+	JR	ECO1
+;
+; ---------------- puerto paralelo (igual que en instalar.mac) ----------------
+;
+; RXT - recibe 3 bits en A (espera lo que haga falta)
+RXT:	IN	A,(PLPTST)
+	BIT	7,A		;strobe de la PC
+	JR	Z,RXT
+	RRCA
+	RRCA
+	RRCA
+	AND	07H
+	LD	C,A
+	LD	A,08H		;confirmar
+	OUT	(PLPTDAT),A
+RXT1:	IN	A,(PLPTST)
+	BIT	7,A
+	JR	NZ,RXT1
+	XOR	A		;listos para el proximo
+	OUT	(PLPTDAT),A
+	LD	A,C
+	RET
+;
+; RXB - recibe un byte en A (destruye B, C)
+RXB:	CALL	RXT
+	LD	B,A
+	CALL	RXT
+	RLCA
+	RLCA
+	RLCA
+	OR	B
+	LD	B,A
+	CALL	RXT
+	RRCA
+	RRCA
+	AND	0C0H
+	OR	B
+	RET
+;
+; TXT - manda los 3 bits de A
+TXT:	LD	C,A
+TXT0:	IN	A,(PLPTST)
+	BIT	6,A		;esperar que la PC este lista
+	JR	NZ,TXT0
+	LD	A,C
+	AND	07H
+	OR	10H		;datos y strobe
+	OUT	(PLPTDAT),A
+TXT1:	IN	A,(PLPTST)
+	BIT	6,A		;la PC confirma
+	JR	Z,TXT1
+	LD	A,08H
+	OUT	(PLPTDAT),A
+	RET
+;
+; TXB - manda el byte A (destruye C, D)
+TXB:	LD	D,A
+	CALL	TXT
+	LD	A,D
+	RRCA
+	RRCA
+	RRCA
+	CALL	TXT
+	LD	A,D
+	RLCA
+	RLCA
+	AND	03H
+	JP	TXT
+;
+; BIT1 - escribe '1' o '0' (bit C de B) en la fila 7, columna E
+BIT1:	PUSH	BC
+	LD	A,B
+	AND	C
+	LD	A,'0'
+	JR	Z,BIT2
+	INC	A
+BIT2:	LD	D,7
+	CALL	PUTC
+	POP	BC
+	RET
+;
+; ---------------- pantalla (igual que en instalar.mac) ----------------
+;
+; CLS - borra las 40 columnas del LCD
+CLS:	LD	B,0
+CLS1:	PUSH	BC
+	LD	A,B
+	CALL	COLSEL
+	LD	HL,4038H
+	LD	B,128
+CLS2:	LD	(HL),0
+	INC	HL
+	DJNZ	CLS2
+	POP	BC
+	INC	B
+	LD	A,B
+	CP	40
+	JR	NZ,CLS1
+	RET
+;
+; COLSEL - elige la columna A (0-39) del LCD en la ranura A
+COLSEL:	LD	E,DEVLCDL
+	CP	20
+	JR	C,COLS1
+	SUB	20
+	LD	E,DEVLCDR
+COLS1:	LD	D,A
+	LD	A,E
+	OUT	(PSLADV),A
+	XOR	A
+	OUT	(PSLAPG),A
+	LD	A,P2INIT AND 0F7H	;CAS bajo
+	OUT	(PMISC2),A
+	LD	A,19
+	SUB	D
+	LD	(4000H),A	;numero de columna del controlador
+	LD	A,P2INIT OR 08H	;CAS alto
+	OUT	(PMISC2),A
+	RET
+;
+; PUTC - letra A en la columna E, fila D
+PUTC:	PUSH	HL
+	PUSH	DE
+	SUB	' '
+	JR	C,PUTC0
+	CP	59		;de espacio a Z
+	JR	C,PUTC1
+PUTC0:	XOR	A
+PUTC1:	LD	L,A
+	LD	H,0
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	LD	BC,FONT
+	ADD	HL,BC
+	PUSH	HL
+	PUSH	DE
+	LD	A,E
+	CALL	COLSEL
+	POP	DE
+	LD	A,D		;fila de puntos = fila * 8
+	ADD	A,A
+	ADD	A,A
+	ADD	A,A
+	ADD	A,38H
+	LD	E,A
+	LD	D,40H
+	POP	HL
+	LD	B,8
+PUTC2:	LD	A,(HL)
+	ADD	A,A		;centrar las letras de 5 puntos
+	LD	(DE),A
+	INC	HL
+	INC	DE
+	DJNZ	PUTC2
+	POP	DE
+	POP	HL
+	RET
+;
+; PRAT - texto HL (termina en 0) desde la columna E, fila D
+PRAT:	LD	A,(HL)
+	OR	A
+	RET	Z
+	CALL	PUTC
+	INC	HL
+	INC	E
+	JR	PRAT
+;
+; ---------------- textos ----------------
+;
+MTIT:	DEFM	'ALTARIS 80 - PRUEBA DE CABLES'
+	DEFB	0
+MAV1:	DEFM	'DEJALA ASI Y SEGUI EN LA PC'
+	DEFB	0
+MPIN:	DEFM	'PIN DB25:  10   11   12   13   15'
+	DEFB	0
+MLLE:	DEFM	'LLEGA:'
+	DEFB	0
+MRES:	DEFM	'PARA SALIR: BOTON RESET'
+	DEFB	0
+MECO:	DEFM	'PRUEBA DE COMUNICACION...'
+	DEFB	0
+PREV:	DEFB	0FFH
+ESTAB:	DEFB	0FFH
+FONT:
+	INCLUDE	instfont.inc
+	END

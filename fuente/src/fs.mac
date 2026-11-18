@@ -1,0 +1,3090 @@
+	TITLE	ALTARIS 80 - DISCO VIRTUAL (BANCO 6)
+;
+; Sistema de archivos sobre la flash de datos (28SF040, 512 KB en
+; sectores de 256 bytes) y disco de aplicaciones de solo lectura en la
+; flash de programa (paginas 8 en adelante). Transferencias con la PC
+; por el puerto paralelo (protocolo de 3 bits de la MailStation).
+;
+; Disposicion de la flash de datos:
+;   sector 0        reservado (no se toca: datos de fabrica)
+;   sector 1        superbloque ("ALTFS1")
+;   sectores 2-17   FAT: 2048 entradas de 2 bytes (una por sector)
+;   sectores 18-33  directorio: 128 entradas de 32 bytes
+;   sectores 34+    datos
+;   sector 2047     reservado (numero de serie de fabrica, en 7FFC8H)
+; La FAT y el directorio se copian a la RAM (pagina 3) al montar y se
+; escriben solo cuando cambian (al cerrar, grabar, borrar, renombrar).
+;
+; (C) 2026 Altaris Software.
+;
+	.Z80
+	INCLUDE	defs.inc
+;
+NBANK	EQU	01C0H
+NMAPB	EQU	01C6H
+NKGET	EQU	01CCH
+NFLUSH	EQU	01D2H
+NRTCRD	EQU	01DBH
+NLCD	EQU	01C3H
+;
+CR	EQU	0DH
+LF	EQU	0AH
+;
+SSUPER	EQU	1
+SMETA	EQU	2
+SDATA	EQU	34
+NDIR	EQU	128
+FFREE	EQU	0FFFFH
+FEND	EQU	0FFFEH
+FRES	EQU	0FFFDH
+NCH	EQU	4
+;
+; RAM pagina 3, vista en la ranura B
+FAT	EQU	8000H		;2048 x 2
+DIR	EQU	9000H		;128 x 32
+CHBUF	EQU	0A100H		;4 x 256
+MARK	EQU	0A500H		;256 bytes (un bit por sector)
+;
+; Variables fijas
+FSOK	EQU	DSKVAR+0
+FSDTY	EQU	DSKVAR+1	;4 bytes: sectores de FAT/directorio a grabar
+FSNEXT	EQU	DSKVAR+5	;proximo sector a probar al asignar
+FSUB	EQU	DSKVAR+7	;ranura B del llamador (pagina, dispositivo)
+FSRES	EQU	DSKVAR+9	;resultado del montaje (1 = recien formateado)
+CCBS	EQU	DSKVAR+32	;bloques de control de canal, 4 x 24
+CCBLEN	EQU	24
+;
+; Bloque de control de canal
+CFLAG	EQU	0		;bit0 abierto, 1 escritura, 2 ROM, 3 buffer
+				;modificado, 4 buffer valido, 5 archivo cambiado
+CDIR	EQU	1		;entrada del directorio
+CPTR	EQU	2		;puntero (4 bytes)
+CEXT	EQU	6		;largo (4 bytes)
+CFIRST	EQU	10		;primer sector (ROM: posicion, bytes 0-1)
+CROMH	EQU	12		;ROM: posicion, byte 2
+CBLK	EQU	13		;bloque logico en el buffer
+CPHYS	EQU	15		;sector fisico del buffer
+COLDF	EQU	17		;cadena vieja a liberar al cerrar
+CNUM	EQU	19		;numero de canal (0-3)
+;
+; Entrada del directorio (32 bytes)
+;   0-15 nombre, 16-17 primer sector, 18-21 largo, 22-23 carga,
+;   24-25 ejecucion, 26-27 hora, 28-29 fecha, 30 atributos, 31 libre
+; Entrada del disco ROM: igual, pero 26-28 = posicion en la flash
+;
+; Area de trabajo
+FSENT	EQU	FSWORK		;copia de una entrada
+NAME1	EQU	FSWORK+32
+NAME2	EQU	FSWORK+48
+WMODE	EQU	FSWORK+64
+WIDX	EQU	FSWORK+65
+WH	EQU	FSWORK+66
+WH2	EQU	FSWORK+67
+WFW	EQU	FSWORK+68
+WBYTE	EQU	FSWORK+69
+WDEST	EQU	FSWORK+70
+WMAX	EQU	FSWORK+72
+WREM	EQU	FSWORK+74	;3 bytes
+WSEC	EQU	FSWORK+78
+WOFF	EQU	FSWORK+80	;3 bytes
+WSRC	EQU	FSWORK+84
+WLEN	EQU	FSWORK+86	;3 bytes
+WLOAD	EQU	FSWORK+90
+WFIRST	EQU	FSWORK+92
+WLAST	EQU	FSWORK+94
+WOLD	EQU	FSWORK+96
+WSUM	EQU	FSWORK+98
+WDEAD	EQU	FSWORK+100
+WCNT	EQU	FSWORK+102
+WCOL	EQU	FSWORK+104
+WLINES	EQU	FSWORK+105
+WPER	EQU	FSWORK+106
+WFIELD	EQU	FSWORK+107
+WNUM	EQU	FSWORK+108	;4 bytes
+WRTC	EQU	FSWORK+112	;8 bytes
+WNEW	EQU	FSWORK+120
+WROMF	EQU	FSWORK+121
+WSTK	EQU	FSWORK+122
+;
+	ASEG
+	ORG	4000H
+;
+	JP	FINIT		;4000
+	JP	FOPEN		;4003
+	JP	FCLOSE		;4006
+	JP	FBGET		;4009
+	JP	FBPUT		;400C
+	JP	FSTAT		;400F
+	JP	FEXT		;4012
+	JP	FPTR		;4015
+	JP	FSPTR		;4018
+	JP	FLOAD		;401B
+	JP	FSAVE		;401E
+	JP	FCMD		;4021
+	JP	FKEYS		;4024
+	JP	FFREEN		;4027
+;
+FSMAG:	DEFM	'ALTFS1'
+ROMMAG:	DEFM	'ALTROM'
+;
+; ==================================================================
+; Mapeo de memoria
+; ==================================================================
+;
+SAVUB:	LD	A,(CURBPG)
+	LD	(FSUB),A
+	LD	A,(CURBDV)
+	LD	(FSUB+1),A
+	RET
+;
+MAPUB:	PUSH	DE
+	LD	A,(FSUB+1)
+	LD	E,A
+	LD	A,(FSUB)
+	CALL	NMAPB
+	POP	DE
+	RET
+;
+MAPR3:	PUSH	DE
+	LD	A,RPFS
+	LD	E,DEVRAM
+	CALL	NMAPB
+	POP	DE
+	RET
+;
+DFP0:	PUSH	DE
+	XOR	A
+	LD	E,DEVDF
+	CALL	NMAPB
+	POP	DE
+	RET
+;
+; SECADR - HL = sector: mapea su pagina de la flash de datos y
+;          devuelve HL = direccion en la ranura B. Preserva BC, DE.
+SECADR:	PUSH	DE
+	LD	A,L
+	AND	3FH
+	OR	80H
+	LD	D,A
+	LD	A,L
+	RLCA
+	RLCA
+	AND	03H
+	LD	E,A
+	LD	A,H
+	ADD	A,A
+	ADD	A,A
+	OR	E
+	LD	E,DEVDF
+	CALL	NMAPB
+	LD	H,D
+	LD	L,0
+	POP	DE
+	RET
+;
+; CFMAP - A:H:L = posicion en la flash de programa: mapea la pagina y
+;         devuelve HL = direccion en la ranura B. Preserva BC, DE.
+CFMAP:	PUSH	DE
+	LD	E,A
+	LD	A,H
+	RLCA
+	RLCA
+	AND	03H
+	LD	D,A
+	LD	A,E
+	ADD	A,A
+	ADD	A,A
+	OR	D
+	LD	E,DEVCF
+	CALL	NMAPB
+	LD	A,H
+	AND	3FH
+	OR	80H
+	LD	H,A
+	POP	DE
+	RET
+;
+; ==================================================================
+; Lectura y escritura de sectores de la flash de datos
+; ==================================================================
+;
+; RDSEC - copia el sector HL a BOUNCE. Preserva HL, DE, BC.
+RDSEC:	PUSH	HL
+	PUSH	DE
+	PUSH	BC
+	CALL	SECADR
+	LD	DE,BOUNCE
+	LD	BC,256
+	LDIR
+	POP	BC
+	POP	DE
+	POP	HL
+	RET
+;
+; WRSEC - borra el sector HL y graba BOUNCE en el. Verifica.
+;   CY = error (A = EDISK). Preserva HL, DE, BC.
+WRSEC:	PUSH	HL
+	PUSH	DE
+	PUSH	BC
+	PUSH	HL
+	CALL	UNLOCK
+	POP	HL
+	PUSH	HL
+	CALL	SECADR
+	LD	(HL),20H	;borrar el sector
+	LD	(HL),0D0H
+	CALL	POLL
+	LD	DE,BOUNCE
+	LD	B,0
+WRS1:	LD	A,(DE)
+	INC	A
+	JR	Z,WRS2		;FF: queda como esta despues de borrar
+	DEC	A
+	LD	(HL),10H	;grabar un byte
+	LD	(HL),A
+	CALL	POLL
+WRS2:	INC	L
+	INC	E
+	DJNZ	WRS1
+	CALL	LOCK
+	POP	HL		;verificar
+	CALL	SECADR
+	LD	DE,BOUNCE
+	LD	B,0
+WRS3:	LD	A,(DE)
+	CP	(HL)
+	JR	NZ,WRS4
+	INC	L
+	INC	E
+	DJNZ	WRS3
+	POP	BC
+	POP	DE
+	POP	HL
+	OR	A
+	RET
+WRS4:	POP	BC
+	POP	DE
+	POP	HL
+	LD	A,EDISK
+	SCF
+	RET
+;
+; POLL - espera que termine la operacion (dos lecturas iguales)
+POLL:	PUSH	BC
+	LD	BC,0
+POL1:	LD	A,(HL)
+	CP	(HL)
+	JR	Z,POL2
+	DEC	BC
+	LD	A,B
+	OR	C
+	JR	NZ,POL1
+POL2:	POP	BC
+	RET
+;
+; Secuencias de desbloqueo y bloqueo de la proteccion por software
+UNLOCK:	CALL	DFP0
+	LD	A,(9823H)
+	LD	A,(9820H)
+	LD	A,(9822H)
+	LD	A,(8418H)
+	LD	A,(841BH)
+	LD	A,(8419H)
+	LD	A,(841AH)
+	RET
+;
+LOCK:	CALL	DFP0
+	LD	A,(9823H)
+	LD	A,(9820H)
+	LD	A,(9822H)
+	LD	A,(8418H)
+	LD	A,(841BH)
+	LD	A,(8419H)
+	LD	A,(840AH)
+	RET
+;
+; ==================================================================
+; FAT, directorio y marcas de cambios (con la RAM 3 mapeada)
+; ==================================================================
+;
+FATADR:	ADD	HL,HL
+	LD	A,H
+	ADD	A,HIGH FAT
+	LD	H,A
+	RET
+;
+; GETFAT - HL = sector -> DE = siguiente. Preserva HL, BC.
+GETFAT:	PUSH	HL
+	CALL	FATADR
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)
+	POP	HL
+	RET
+;
+; PUTFAT - FAT[HL] = DE. Preserva HL, DE, BC.
+PUTFAT:	PUSH	HL
+	LD	A,L
+	RLA
+	LD	A,H
+	RLA			;sector de la FAT = HL / 128
+	CALL	SETDTY
+	CALL	FATADR
+	LD	(HL),E
+	INC	HL
+	LD	(HL),D
+	POP	HL
+	RET
+;
+; SETDTY - marca el sector de metadatos A (0-31). Preserva todo menos A.
+SETDTY:	PUSH	HL
+	PUSH	BC
+	LD	C,A
+	RRCA
+	RRCA
+	RRCA
+	AND	03H
+	LD	HL,FSDTY
+	ADD	A,L
+	LD	L,A
+	JR	NC,SDT1
+	INC	H
+SDT1:	LD	A,C
+	AND	07H
+	LD	B,A
+	LD	A,1
+	JR	Z,SDT3
+SDT2:	ADD	A,A
+	DJNZ	SDT2
+SDT3:	OR	(HL)
+	LD	(HL),A
+	POP	BC
+	POP	HL
+	RET
+;
+; TSTDTY - NZ si el sector de metadatos A esta marcado
+TSTDTY:	PUSH	HL
+	PUSH	BC
+	LD	C,A
+	RRCA
+	RRCA
+	RRCA
+	AND	03H
+	LD	HL,FSDTY
+	ADD	A,L
+	LD	L,A
+	JR	NC,TDT1
+	INC	H
+TDT1:	LD	A,C
+	AND	07H
+	LD	B,A
+	LD	A,1
+	JR	Z,TDT3
+TDT2:	ADD	A,A
+	DJNZ	TDT2
+TDT3:	AND	(HL)
+	POP	BC
+	POP	HL
+	RET
+;
+; DIRADR - A = entrada -> HL = direccion. Preserva BC, DE.
+DIRADR:	LD	L,A
+	LD	H,0
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	LD	A,H
+	ADD	A,HIGH DIR
+	LD	H,A
+	RET
+;
+; DIRDTY - marca el sector del directorio de la entrada A
+DIRDTY:	RRCA
+	RRCA
+	RRCA
+	AND	0FH
+	ADD	A,16
+	JP	SETDTY
+;
+; FLUSHM - graba los sectores de metadatos marcados
+FLUSHM:	LD	C,0
+FLM1:	LD	A,C
+	CALL	TSTDTY
+	JR	Z,FLM3
+	CALL	MAPR3
+	LD	A,C
+	ADD	A,HIGH FAT
+	LD	H,A
+	LD	L,0
+	LD	DE,BOUNCE
+	PUSH	BC
+	LD	BC,256
+	LDIR
+	POP	BC
+	LD	A,C
+	ADD	A,SMETA
+	LD	L,A
+	LD	H,0
+	CALL	WRSEC
+	RET	C
+FLM3:	INC	C
+	LD	A,C
+	CP	32
+	JR	C,FLM1
+	XOR	A
+	LD	HL,FSDTY
+	LD	(HL),A
+	INC	HL
+	LD	(HL),A
+	INC	HL
+	LD	(HL),A
+	INC	HL
+	LD	(HL),A
+	RET
+;
+; ALLOC - busca un sector libre y lo marca como fin de cadena.
+;   Salida: HL = sector, o CY con A = EFULL. Destruye BC, DE.
+ALLOC:	LD	HL,(FSNEXT)
+	LD	BC,2048-SDATA
+ALC1:	LD	A,H
+	CP	08H
+	JR	C,ALC2
+	LD	HL,SDATA
+ALC2:	PUSH	HL
+	CALL	FATADR
+	LD	A,(HL)
+	INC	HL
+	AND	(HL)
+	POP	HL
+	INC	A
+	JR	Z,ALC3
+	INC	HL
+	DEC	BC
+	LD	A,B
+	OR	C
+	JR	NZ,ALC1
+	LD	A,EFULL
+	SCF
+	RET
+ALC3:	PUSH	HL
+	INC	HL
+	LD	(FSNEXT),HL
+	POP	HL
+	LD	DE,FEND
+	CALL	PUTFAT
+	OR	A
+	RET
+;
+; FREECH - libera la cadena que empieza en HL
+FREECH:	LD	A,H
+	CP	08H
+	RET	NC		;fin de cadena o vacia
+	OR	A
+	JR	NZ,FRC1
+	LD	A,L
+	CP	SDATA
+	RET	C		;nunca liberar los sectores reservados
+FRC1:	CALL	GETFAT
+	PUSH	DE
+	LD	DE,FFREE
+	CALL	PUTFAT
+	POP	HL
+	JR	FREECH
+;
+; ==================================================================
+; Nombres de archivo
+; ==================================================================
+;
+; GETNM - lee un nombre desde (HL) a DE (16 bytes, relleno con 0).
+;   Salida: HL despues del nombre y los espacios. CY si es invalido.
+GETNM:	PUSH	DE
+	LD	B,16
+	XOR	A
+GN0:	LD	(DE),A
+	INC	DE
+	DJNZ	GN0
+	POP	DE
+	CALL	SKPSP
+	CP	'"'
+	JR	NZ,GN1
+	INC	HL
+GN1:	LD	B,0
+GN2:	LD	A,(HL)
+	OR	A
+	JR	Z,GN5
+	CP	CR
+	JR	Z,GN5
+	CP	' '
+	JR	Z,GN5
+	CP	'"'
+	JR	Z,GN4
+	CALL	VALCH
+	JR	C,GNBAD
+	LD	C,A
+	LD	A,B
+	CP	16
+	JR	NC,GNBAD
+	LD	A,C
+	LD	(DE),A
+	INC	DE
+	INC	B
+	INC	HL
+	JR	GN2
+GN4:	INC	HL
+GN5:	LD	A,B
+	OR	A
+	JR	Z,GNBAD
+	CALL	SKPSP
+	OR	A
+	RET
+GNBAD:	LD	A,ENAME
+	SCF
+	RET
+;
+SKPSP:	LD	A,(HL)
+	CP	' '
+	RET	NZ
+	INC	HL
+	JR	SKPSP
+;
+; VALCH - CY si A no puede ir en un nombre
+VALCH:	CP	'!'
+	JR	C,VBAD
+	CP	7FH
+	JR	NC,VBAD
+	PUSH	HL
+	PUSH	BC
+	LD	HL,BADCH
+	LD	BC,NBADCH
+	CPIR
+	POP	BC
+	POP	HL
+	JR	Z,VBAD
+	OR	A
+	RET
+VBAD:	SCF
+	RET
+BADCH:	DEFM	'"*+,/:;<=>?[\]|'
+NBADCH	EQU	$-BADCH
+;
+; CMPNM - compara 16 bytes en HL y DE sin distinguir mayusculas. Z = igual
+CMPNM:	PUSH	HL
+	PUSH	DE
+	PUSH	BC
+	LD	B,16
+CMN1:	LD	A,(DE)
+	CALL	UPC
+	LD	C,A
+	LD	A,(HL)
+	CALL	UPC
+	CP	C
+	JR	NZ,CMN9
+	INC	HL
+	INC	DE
+	DJNZ	CMN1
+CMN9:	POP	BC
+	POP	DE
+	POP	HL
+	RET
+;
+UPC:	CP	'a'
+	RET	C
+	CP	'z'+1
+	RET	NC
+	AND	5FH
+	RET
+;
+; FINDU - busca el nombre DE en el directorio del usuario.
+;   Salida: NC, A = entrada, HL -> entrada (RAM 3 mapeada); CY si no esta
+FINDU:	CALL	MAPR3
+	LD	HL,DIR
+	LD	B,0
+FU1:	LD	A,(HL)
+	INC	A
+	JR	Z,FU2
+	DEC	A
+	JR	Z,FU2
+	CALL	CMPNM
+	JR	Z,FU3
+FU2:	PUSH	DE
+	LD	DE,32
+	ADD	HL,DE
+	POP	DE
+	INC	B
+	LD	A,B
+	CP	NDIR
+	JR	C,FU1
+	SCF
+	RET
+FU3:	LD	A,B
+	OR	A
+	RET
+;
+; FREEDIR - entrada libre. Salida: A, HL; CY con A = EDIRF si no hay
+FREEDIR:CALL	MAPR3
+	LD	HL,DIR
+	LD	B,0
+FD1:	LD	A,(HL)
+	INC	A
+	JR	Z,FD3
+	DEC	A
+	JR	Z,FD3
+	LD	DE,32
+	ADD	HL,DE
+	INC	B
+	LD	A,B
+	CP	NDIR
+	JR	C,FD1
+	LD	A,EDIRF
+	SCF
+	RET
+FD3:	LD	A,B
+	OR	A
+	RET
+;
+; ROMDIR - mapea el directorio del disco ROM.
+;   Salida: NC, BC = cantidad, HL -> primera entrada; CY si no hay disco
+ROMDIR:	PUSH	DE
+	LD	A,PGROMD
+	LD	E,DEVCF
+	CALL	NMAPB
+	LD	HL,8000H
+	LD	DE,ROMMAG
+	LD	B,6
+RD0:	LD	A,(DE)
+	CP	(HL)
+	JR	NZ,RDNO
+	INC	HL
+	INC	DE
+	DJNZ	RD0
+	LD	BC,(8008H)
+	LD	HL,8020H
+	LD	A,B
+	OR	C
+	POP	DE
+	RET	NZ
+	SCF
+	RET
+RDNO:	POP	DE
+	SCF
+	RET
+;
+; FINDR - busca el nombre DE en el disco ROM. NC: entrada copiada a FSENT
+FINDR:	CALL	ROMDIR
+	RET	C
+FR1:	CALL	CMPNM
+	JR	Z,FR2
+	PUSH	DE
+	LD	DE,32
+	ADD	HL,DE
+	POP	DE
+	DEC	BC
+	LD	A,B
+	OR	C
+	JR	NZ,FR1
+	SCF
+	RET
+FR2:	LD	DE,FSENT
+	LD	BC,32
+	LDIR
+	OR	A
+	RET
+;
+; ISOPEN - CY si la entrada A del usuario esta abierta en algun canal
+ISOPEN:	PUSH	IX
+	PUSH	BC
+	LD	C,A
+	LD	IX,CCBS
+	LD	B,NCH
+ISO1:	LD	A,(IX+CFLAG)
+	AND	05H
+	CP	01H		;abierto y no ROM
+	JR	NZ,ISO2
+	LD	A,(IX+CDIR)
+	CP	C
+	JR	Z,ISO3
+ISO2:	PUSH	DE
+	LD	DE,CCBLEN
+	ADD	IX,DE
+	POP	DE
+	DJNZ	ISO1
+	LD	A,C
+	POP	BC
+	POP	IX
+	OR	A
+	RET
+ISO3:	LD	A,EOPEN
+	POP	BC
+	POP	IX
+	SCF
+	RET
+;
+; PACKDT - fecha y hora actuales: BC = hora, DE = fecha (formato FAT)
+PACKDT:	LD	HL,WRTC
+	CALL	NRTCRD
+	LD	A,(WRTC+2)	;hora
+	LD	L,A
+	LD	H,0
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	LD	A,(WRTC+1)	;minutos
+	OR	L
+	LD	L,A
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	LD	A,(WRTC)	;segundos / 2
+	SRL	A
+	OR	L
+	LD	L,A
+	LD	B,H
+	LD	C,L
+	LD	A,(WRTC+6)	;anio desde 1980
+	LD	L,A
+	LD	H,0
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	LD	A,(WRTC+5)	;mes
+	OR	L
+	LD	L,A
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	LD	A,(WRTC+4)	;dia
+	OR	L
+	LD	L,A
+	EX	DE,HL
+	RET
+;
+; ==================================================================
+; Montaje y formato
+; ==================================================================
+;
+FINIT:	CALL	SAVUB
+	XOR	A
+	LD	(FSRES),A
+	LD	(FSOK),A
+	LD	HL,CCBS		;cerrar todos los canales
+	LD	B,NCH*CCBLEN
+FI0:	LD	(HL),A
+	INC	HL
+	DJNZ	FI0
+	LD	HL,FSDTY
+	LD	(HL),A
+	INC	HL
+	LD	(HL),A
+	INC	HL
+	LD	(HL),A
+	INC	HL
+	LD	(HL),A
+	LD	HL,SSUPER
+	CALL	RDSEC
+	LD	HL,BOUNCE
+	LD	DE,FSMAG
+	LD	B,6
+FI1:	LD	A,(DE)
+	CP	(HL)
+	JR	NZ,FINEW
+	INC	HL
+	INC	DE
+	DJNZ	FI1
+	CALL	LDMETA
+	CALL	GCFAT
+	CALL	FLUSHM
+	JR	FI9
+FINEW:	CALL	DOFMT
+	LD	A,1
+	LD	(FSRES),A
+FI9:	LD	HL,(TICKS)	;repartir el desgaste: empezar en otro lugar
+	LD	A,H
+	AND	07H
+	LD	H,A
+	LD	(FSNEXT),HL
+	LD	A,1
+	LD	(FSOK),A
+	LD	A,(FSRES)
+	OR	A
+	RET
+;
+; LDMETA - copia FAT y directorio de la flash a la RAM 3
+LDMETA:	LD	C,0
+LDM1:	LD	A,C
+	ADD	A,SMETA
+	LD	L,A
+	LD	H,0
+	CALL	RDSEC
+	CALL	MAPR3
+	LD	A,C
+	ADD	A,HIGH FAT
+	LD	D,A
+	LD	E,0
+	LD	HL,BOUNCE
+	PUSH	BC
+	LD	BC,256
+	LDIR
+	POP	BC
+	INC	C
+	LD	A,C
+	CP	32
+	JR	C,LDM1
+	RET
+;
+; GCFAT - recupera sectores asignados que ningun archivo usa
+;   (por ejemplo, si se corto la energia con un archivo abierto)
+GCFAT:	CALL	MAPR3
+	LD	HL,MARK
+	XOR	A
+	LD	B,A
+GC0:	LD	(HL),A
+	INC	L
+	DJNZ	GC0
+	LD	C,0
+GC1:	CALL	MAPR3
+	LD	A,C
+	CALL	DIRADR
+	LD	A,(HL)
+	INC	A
+	JR	Z,GC4
+	DEC	A
+	JR	Z,GC4
+	LD	DE,16
+	ADD	HL,DE
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)
+	EX	DE,HL
+GC2:	LD	A,H
+	CP	08H
+	JR	NC,GC4
+	CALL	TSTMRK
+	JR	NZ,GC4		;cadena cruzada o ciclo: cortar
+	CALL	SETMRK
+	CALL	GETFAT
+	EX	DE,HL
+	JR	GC2
+GC4:	INC	C
+	LD	A,C
+	CP	NDIR
+	JR	C,GC1
+	LD	HL,SDATA
+GC5:	CALL	GETFAT
+	LD	A,D
+	AND	E
+	INC	A
+	JR	Z,GC6		;libre
+	LD	A,D
+	INC	A
+	JR	NZ,GC5A
+	LD	A,E
+	CP	0FDH
+	JR	Z,GC6		;sector fallado: se queda reservado
+GC5A:	CALL	TSTMRK
+	JR	NZ,GC6
+	LD	DE,FFREE
+	CALL	PUTFAT
+GC6:	INC	HL
+	LD	A,H
+	CP	08H
+	JR	C,GC5
+	RET
+;
+; MRKADR - HL = sector -> DE = direccion en MARK, A = mascara
+MRKADR:	PUSH	BC
+	PUSH	HL
+	LD	A,L
+	AND	07H
+	LD	B,A
+	SRL	H
+	RR	L
+	SRL	H
+	RR	L
+	SRL	H
+	RR	L
+	LD	H,HIGH MARK
+	LD	A,1
+	INC	B
+MKA1:	DEC	B
+	JR	Z,MKA2
+	ADD	A,A
+	JR	MKA1
+MKA2:	EX	DE,HL
+	POP	HL
+	POP	BC
+	RET
+;
+TSTMRK:	PUSH	DE
+	CALL	MRKADR
+	EX	DE,HL
+	AND	(HL)
+	EX	DE,HL
+	POP	DE
+	RET
+;
+SETMRK:	PUSH	DE
+	CALL	MRKADR
+	EX	DE,HL
+	OR	(HL)
+	LD	(HL),A
+	EX	DE,HL
+	POP	DE
+	RET
+;
+; DOFMT - formatea el disco
+DOFMT:	CALL	MAPR3
+	LD	HL,FAT
+	LD	DE,FAT+1
+	LD	BC,8191
+	LD	(HL),0FFH
+	LDIR
+	LD	HL,0
+FMT1:	LD	DE,FRES
+	CALL	PUTFAT
+	INC	HL
+	LD	A,L
+	CP	SDATA
+	JR	C,FMT1
+	LD	HL,2047		;ultimo sector: numero de serie de fabrica
+	CALL	PUTFAT
+	LD	A,0FFH
+	LD	HL,FSDTY
+	LD	(HL),A
+	INC	HL
+	LD	(HL),A
+	INC	HL
+	LD	(HL),A
+	INC	HL
+	LD	(HL),A
+	CALL	FLUSHM
+	RET	C
+	LD	HL,BOUNCE	;superbloque
+	LD	DE,BOUNCE+1
+	LD	BC,255
+	LD	(HL),0FFH
+	LDIR
+	LD	HL,SUPERB
+	LD	DE,BOUNCE
+	LD	BC,SUPERL
+	LDIR
+	CALL	PACKDT
+	LD	(BOUNCE+32),BC
+	LD	(BOUNCE+34),DE
+	LD	HL,SSUPER
+	JP	WRSEC
+;
+SUPERB:	DEFM	'ALTFS1'
+	DEFB	1,0		;version
+	DEFM	'ALTARIS 80'
+	DEFB	0,0,0,0,0,0
+SUPERL	EQU	$-SUPERB
+;
+; ==================================================================
+; Canales
+; ==================================================================
+;
+; CCBADR - A = canal 0-3 -> IX
+CCBADR:	PUSH	DE
+	PUSH	AF
+	LD	E,A
+	ADD	A,A
+	ADD	A,E
+	ADD	A,A
+	ADD	A,A
+	ADD	A,A
+	LD	E,A
+	LD	D,0
+	LD	IX,CCBS
+	ADD	IX,DE
+	POP	AF
+	POP	DE
+	RET
+;
+; GETCH - E = numero de canal (1-4) -> IX. CY con A = ECHAN si no sirve
+GETCH:	LD	A,E
+	DEC	A
+	CP	NCH
+	JR	NC,GCBAD
+	CALL	CCBADR
+	LD	A,(IX+CFLAG)
+	AND	01H
+	RET	NZ
+GCBAD:	LD	A,ECHAN
+	SCF
+	RET
+;
+; FREECB - canal libre -> IX, A = 0-3. CY con A = EMANY si no hay
+FREECB:	XOR	A
+FCB1:	CALL	CCBADR
+	BIT	0,(IX+CFLAG)
+	JR	Z,FCB2
+	INC	A
+	CP	NCH
+	JR	C,FCB1
+	LD	A,EMANY
+	SCF
+	RET
+FCB2:	PUSH	AF
+	PUSH	IX
+	POP	HL
+	LD	B,CCBLEN
+	XOR	A
+FCB3:	LD	(HL),A
+	INC	HL
+	DJNZ	FCB3
+	POP	AF
+	LD	(IX+CNUM),A
+	LD	(IX+CBLK),0FFH
+	LD	(IX+CBLK+1),0FFH
+	LD	(IX+COLDF),0FFH
+	LD	(IX+COLDF+1),0FFH
+	OR	A
+	RET
+;
+; CHBADR - HL = buffer del canal IX (RAM 3)
+CHBADR:	LD	A,(IX+CNUM)
+	ADD	A,HIGH CHBUF
+	LD	H,A
+	LD	L,0
+	RET
+;
+; PTRLT - CY si PTR < EXT
+PTRLT:	LD	A,(IX+CPTR)
+	SUB	(IX+CEXT)
+	LD	A,(IX+CPTR+1)
+	SBC	A,(IX+CEXT+1)
+	LD	A,(IX+CPTR+2)
+	SBC	A,(IX+CEXT+2)
+	LD	A,(IX+CPTR+3)
+	SBC	A,(IX+CEXT+3)
+	RET
+;
+INCPTR:	INC	(IX+CPTR)
+	RET	NZ
+	INC	(IX+CPTR+1)
+	RET	NZ
+	INC	(IX+CPTR+2)
+	RET	NZ
+	INC	(IX+CPTR+3)
+	RET
+;
+; ROMPOS - mapea el byte PTR de un archivo ROM. HL -> byte
+ROMPOS:	LD	A,(IX+CFIRST)
+	ADD	A,(IX+CPTR)
+	LD	L,A
+	LD	A,(IX+CFIRST+1)
+	ADC	A,(IX+CPTR+1)
+	LD	H,A
+	LD	A,(IX+CROMH)
+	ADC	A,(IX+CPTR+2)
+	JP	CFMAP
+;
+; FLUSHB - graba el buffer del canal IX si cambio
+FLUSHB:	LD	A,(IX+CFLAG)
+	AND	18H
+	CP	18H
+	JR	Z,FLB1
+	OR	A
+	RET
+FLB1:	CALL	MAPR3
+	CALL	CHBADR
+	LD	DE,BOUNCE
+	LD	BC,256
+	LDIR
+	LD	L,(IX+CPHYS)
+	LD	H,(IX+CPHYS+1)
+	CALL	WRSEC
+	RET	C
+	RES	3,(IX+CFLAG)
+	RET
+;
+; WALK - busca el sector fisico del bloque BC del canal IX (RAM 3 mapeada)
+;   NC: HL = sector.  CY: no existe; HL = ultimo sector de la cadena
+;   (FFFF si esta vacia) y DE = cantidad de bloques.
+WALK:	LD	DE,0
+	LD	L,(IX+CFIRST)
+	LD	H,(IX+CFIRST+1)
+	BIT	4,(IX+CFLAG)
+	JR	Z,WK1
+	PUSH	HL
+	LD	L,(IX+CBLK)
+	LD	H,(IX+CBLK+1)
+	OR	A
+	SBC	HL,BC
+	POP	HL
+	JR	Z,WK0
+	JR	NC,WK1		;el buffer esta mas adelante: desde el principio
+WK0:	LD	E,(IX+CBLK)
+	LD	D,(IX+CBLK+1)
+	LD	L,(IX+CPHYS)
+	LD	H,(IX+CPHYS+1)
+WK1:	LD	A,H
+	CP	08H
+	JR	NC,WKEMP
+WK2:	LD	A,E
+	CP	C
+	JR	NZ,WK3
+	LD	A,D
+	CP	B
+	JR	NZ,WK3
+	OR	A
+	RET
+WK3:	PUSH	DE
+	PUSH	HL
+	CALL	GETFAT
+	LD	A,D
+	CP	08H
+	JR	NC,WKEND
+	EX	DE,HL
+	POP	DE
+	POP	DE
+	INC	DE
+	JR	WK2
+WKEND:	POP	HL
+	POP	DE
+	INC	DE
+	SCF
+	RET
+WKEMP:	LD	HL,0FFFFH
+	LD	DE,0
+	SCF
+	RET
+;
+; SELBLK - deja en el buffer el bloque BC del canal IX.
+;   A = 1 si es para escribir (agrega bloques si hace falta).
+SELBLK:	LD	(WFW),A
+	BIT	4,(IX+CFLAG)
+	JR	Z,SB1
+	LD	A,(IX+CBLK)
+	CP	C
+	JR	NZ,SB1
+	LD	A,(IX+CBLK+1)
+	CP	B
+	RET	Z
+SB1:	PUSH	BC
+	CALL	FLUSHB
+	POP	BC
+	RET	C
+	CALL	MAPR3
+	CALL	WALK
+	JR	NC,SB5
+	LD	A,(WFW)
+	OR	A
+	JR	Z,SBEOF
+SB2:	PUSH	BC		;agregar un bloque a la cadena
+	PUSH	DE
+	PUSH	HL
+	CALL	ALLOC
+	POP	DE		;DE = ultimo
+	JR	C,SBFULL
+	LD	A,D
+	AND	E
+	INC	A
+	JR	NZ,SB3
+	LD	(IX+CFIRST),L	;era la cadena vacia
+	LD	(IX+CFIRST+1),H
+	JR	SB4
+SB3:	EX	DE,HL
+	CALL	PUTFAT
+	EX	DE,HL
+SB4:	POP	DE
+	POP	BC
+	LD	A,E
+	CP	C
+	JR	NZ,SBGAP
+	LD	A,D
+	CP	B
+	JR	Z,SBNEW
+SBGAP:	PUSH	BC		;bloque intermedio: ceros
+	PUSH	DE
+	CALL	ZBOUNC
+	CALL	WRSEC
+	POP	DE
+	POP	BC
+	RET	C
+	CALL	MAPR3
+	INC	DE
+	JR	SB2
+SBNEW:	PUSH	HL		;bloque nuevo: buffer en cero
+	CALL	MAPR3
+	CALL	CHBADR
+	XOR	A
+	LD	B,A
+SBN1:	LD	(HL),A
+	INC	L
+	DJNZ	SBN1
+	POP	HL
+	SET	3,(IX+CFLAG)
+	JR	SB6
+SB5:	CALL	RDSEC		;bloque existente: leerlo
+	PUSH	HL
+	PUSH	BC
+	CALL	MAPR3
+	CALL	CHBADR
+	EX	DE,HL
+	LD	HL,BOUNCE
+	LD	BC,256
+	LDIR
+	POP	BC
+	POP	HL
+SB6:	LD	(IX+CPHYS),L
+	LD	(IX+CPHYS+1),H
+	LD	(IX+CBLK),C
+	LD	(IX+CBLK+1),B
+	SET	4,(IX+CFLAG)
+	OR	A
+	RET
+SBFULL:	POP	DE
+	POP	BC
+	LD	A,EFULL
+	SCF
+	RET
+SBEOF:	LD	A,EEOF
+	SCF
+	RET
+;
+ZBOUNC:	PUSH	HL
+	PUSH	BC
+	LD	HL,BOUNCE
+	XOR	A
+	LD	B,A
+ZB1:	LD	(HL),A
+	INC	L
+	DJNZ	ZB1
+	POP	BC
+	POP	HL
+	RET
+;
+; ------------------------------------------------------------------
+; F_OPEN - A = modo (0 OPENOUT, 1 OPENIN, 2 OPENUP), CMDBUF = nombre
+;   Salida: A = canal (0 si no existe), o CY con A = error
+; ------------------------------------------------------------------
+;
+FOPEN:	PUSH	AF
+	CALL	SAVUB
+	LD	HL,CMDBUF
+	LD	DE,NAME1
+	CALL	GETNM
+	POP	DE
+	RET	C
+	LD	A,D
+OPEN1:	LD	(WMODE),A	;entrada interna: nombre en NAME1
+	CALL	FREECB
+	RET	C
+	LD	A,(WMODE)
+	OR	A
+	JR	Z,OPOUT
+	LD	DE,NAME1
+	CALL	FINDU
+	JR	NC,OPUSR
+	LD	DE,NAME1
+	CALL	FINDR
+	JR	C,OPNONE
+	LD	A,(WMODE)
+	CP	2
+	LD	A,ERO
+	SCF
+	RET	Z
+	LD	HL,(FSENT+18)	;archivo del disco ROM
+	LD	(IX+CEXT),L
+	LD	(IX+CEXT+1),H
+	LD	HL,(FSENT+20)
+	LD	(IX+CEXT+2),L
+	LD	(IX+CEXT+3),H
+	LD	HL,(FSENT+26)
+	LD	(IX+CFIRST),L
+	LD	(IX+CFIRST+1),H
+	LD	A,(FSENT+28)
+	LD	(IX+CROMH),A
+	LD	(IX+CFLAG),05H
+	JR	OPOK
+OPNONE:	XOR	A
+	RET
+OPUSR:	LD	(WIDX),A	;archivo del usuario
+	LD	A,(WMODE)
+	CP	2
+	JR	NZ,OPU1
+	LD	A,(WIDX)	;para escribir: no puede estar abierto
+	CALL	ISOPEN
+	RET	C
+OPU1:	CALL	MAPR3
+	LD	A,(WIDX)
+	CALL	DIRADR
+	LD	DE,16
+	ADD	HL,DE
+	LD	A,(HL)
+	LD	(IX+CFIRST),A
+	INC	HL
+	LD	A,(HL)
+	LD	(IX+CFIRST+1),A
+	INC	HL
+	PUSH	IX
+	POP	DE
+	INC	DE
+	INC	DE
+	INC	DE
+	INC	DE
+	INC	DE
+	INC	DE		;DE -> CEXT
+	LD	BC,4
+	LDIR
+	LD	A,(WIDX)
+	LD	(IX+CDIR),A
+	LD	A,(WMODE)
+	CP	2
+	LD	A,01H
+	JR	NZ,OPU2
+	LD	A,03H
+OPU2:	LD	(IX+CFLAG),A
+OPOK:	LD	A,(IX+CNUM)
+	INC	A
+	OR	A
+	RET
+OPOUT:	LD	DE,NAME1	;OPENOUT
+	CALL	FINDU
+	JR	C,OPNEW
+	LD	(WIDX),A
+	CALL	ISOPEN
+	RET	C
+	CALL	MAPR3
+	LD	A,(WIDX)
+	CALL	DIRADR
+	LD	DE,16
+	ADD	HL,DE
+	LD	A,(HL)
+	LD	(IX+COLDF),A	;la cadena vieja se libera al cerrar
+	INC	HL
+	LD	A,(HL)
+	LD	(IX+COLDF+1),A
+	JR	OPO2
+OPNEW:	CALL	FREEDIR
+	RET	C
+	LD	(WIDX),A
+	EX	DE,HL		;reservar la entrada
+	LD	HL,NAME1
+	LD	BC,16
+	LDIR
+	EX	DE,HL
+	LD	B,16
+OPN1:	LD	(HL),0FFH
+	INC	HL
+	DJNZ	OPN1
+	LD	HL,DIR		;largo 0 por ahora
+	LD	A,(WIDX)
+	CALL	DIRADR
+	LD	DE,18
+	ADD	HL,DE
+	XOR	A
+	LD	(HL),A
+	INC	HL
+	LD	(HL),A
+	INC	HL
+	LD	(HL),A
+	INC	HL
+	LD	(HL),A
+	LD	A,(WIDX)
+	CALL	DIRDTY
+OPO2:	LD	A,(WIDX)
+	LD	(IX+CDIR),A
+	LD	(IX+CFIRST),0FFH
+	LD	(IX+CFIRST+1),0FFH
+	LD	(IX+CFLAG),23H	;abierto, escritura, cambiado
+	JR	OPOK
+;
+; ------------------------------------------------------------------
+; F_CLOSE - E = canal (0 = todos)
+; ------------------------------------------------------------------
+;
+FCLOSE:	CALL	SAVUB
+CLOSEH:	LD	A,E
+	OR	A
+	JR	Z,CLALL
+	CALL	GETCH
+	RET	C
+	JP	CLOSE1
+CLALL:	LD	C,0		;C = primer error
+	XOR	A
+CLA1:	PUSH	AF
+	CALL	CCBADR
+	BIT	0,(IX+CFLAG)
+	JR	Z,CLA2
+	PUSH	BC
+	CALL	CLOSE1
+	POP	BC
+	JR	NC,CLA2
+	INC	C
+	DEC	C
+	JR	NZ,CLA2
+	LD	C,A
+CLA2:	POP	AF
+	INC	A
+	CP	NCH
+	JR	C,CLA1
+	LD	A,C
+	OR	A
+	RET	Z
+	SCF
+	RET
+;
+CLOSE1:	BIT	1,(IX+CFLAG)
+	JR	Z,CL9
+	CALL	FLUSHB
+	JR	C,CLERR
+	BIT	5,(IX+CFLAG)
+	JR	Z,CL9
+	CALL	MAPR3
+	LD	A,(IX+CDIR)
+	CALL	DIRADR
+	LD	DE,16
+	ADD	HL,DE
+	LD	A,(IX+CFIRST)
+	LD	(HL),A
+	INC	HL
+	LD	A,(IX+CFIRST+1)
+	LD	(HL),A
+	INC	HL
+	LD	A,(IX+CEXT)
+	LD	(HL),A
+	INC	HL
+	LD	A,(IX+CEXT+1)
+	LD	(HL),A
+	INC	HL
+	LD	A,(IX+CEXT+2)
+	LD	(HL),A
+	INC	HL
+	LD	A,(IX+CEXT+3)
+	LD	(HL),A
+	INC	HL
+	PUSH	HL
+	CALL	PACKDT
+	POP	HL
+	INC	HL		;carga y ejecucion quedan
+	INC	HL
+	INC	HL
+	INC	HL
+	LD	(HL),C
+	INC	HL
+	LD	(HL),B
+	INC	HL
+	LD	(HL),E
+	INC	HL
+	LD	(HL),D
+	CALL	MAPR3
+	LD	L,(IX+COLDF)
+	LD	H,(IX+COLDF+1)
+	CALL	FREECH
+	LD	A,(IX+CDIR)
+	CALL	DIRDTY
+	CALL	FLUSHM
+	JR	C,CLERR
+CL9:	LD	(IX+CFLAG),0
+	OR	A
+	RET
+CLERR:	LD	(IX+CFLAG),0
+	SCF
+	RET
+;
+; ------------------------------------------------------------------
+; F_BGET - E = canal -> A = byte, CY si era el ultimo.
+;          Si hay error deja el codigo en FSERRN.
+; ------------------------------------------------------------------
+;
+FBGET:	CALL	SAVUB
+	XOR	A
+	LD	(FSERRN),A
+BGET1:	CALL	GETCH
+	JR	C,BGERR
+	CALL	PTRLT
+	LD	A,EEOF
+	JR	NC,BGERR
+	BIT	2,(IX+CFLAG)
+	JR	NZ,BGROM
+	LD	C,(IX+CPTR+1)
+	LD	B,(IX+CPTR+2)
+	XOR	A
+	CALL	SELBLK
+	JR	C,BGERR
+	CALL	MAPR3
+	CALL	CHBADR
+	LD	L,(IX+CPTR)
+	LD	A,(HL)
+	JR	BGNEXT
+BGROM:	CALL	ROMPOS
+	LD	A,(HL)
+BGNEXT:	PUSH	AF
+	CALL	INCPTR
+	CALL	PTRLT
+	CCF
+	POP	BC
+	LD	A,B
+	RET
+BGERR:	LD	(FSERRN),A
+	SCF
+	RET
+;
+; ------------------------------------------------------------------
+; F_BPUT - E = canal, A = byte
+; ------------------------------------------------------------------
+;
+FBPUT:	LD	(WBYTE),A
+	CALL	SAVUB
+BPUT1:	CALL	GETCH
+	RET	C
+	BIT	1,(IX+CFLAG)
+	LD	A,ERO
+	SCF
+	RET	Z
+	LD	C,(IX+CPTR+1)
+	LD	B,(IX+CPTR+2)
+	LD	A,1
+	CALL	SELBLK
+	RET	C
+	CALL	MAPR3
+	CALL	CHBADR
+	LD	L,(IX+CPTR)
+	LD	A,(WBYTE)
+	LD	(HL),A
+	LD	A,(IX+CFLAG)
+	OR	28H
+	LD	(IX+CFLAG),A
+	CALL	INCPTR
+	CALL	PTRLT
+	JR	C,BP9
+	LD	A,(IX+CPTR)
+	LD	(IX+CEXT),A
+	LD	A,(IX+CPTR+1)
+	LD	(IX+CEXT+1),A
+	LD	A,(IX+CPTR+2)
+	LD	(IX+CEXT+2),A
+	LD	A,(IX+CPTR+3)
+	LD	(IX+CEXT+3),A
+BP9:	OR	A
+	RET
+;
+; F_STAT - E = canal. Z (A=0) si esta al final
+FSTAT:	CALL	GETCH
+	RET	C
+	CALL	PTRLT
+	LD	A,1
+	JR	C,FST1
+	XOR	A
+	RET
+FST1:	OR	A
+	RET
+;
+; F_EXT / F_PTR - E = canal -> DEHL
+FEXT:	CALL	GETCH
+	RET	C
+	LD	L,(IX+CEXT)
+	LD	H,(IX+CEXT+1)
+	LD	E,(IX+CEXT+2)
+	LD	D,(IX+CEXT+3)
+	OR	A
+	RET
+;
+FPTR:	CALL	GETCH
+	RET	C
+	LD	L,(IX+CPTR)
+	LD	H,(IX+CPTR+1)
+	LD	E,(IX+CPTR+2)
+	LD	D,(IX+CPTR+3)
+	OR	A
+	RET
+;
+; F_SPTR - A = canal, DEHL = puntero
+FSPTR:	PUSH	DE
+	LD	E,A
+	CALL	GETCH
+	POP	DE
+	RET	C
+	LD	A,D		;limite: 512 KB
+	OR	A
+	JR	NZ,SPBIG
+	LD	A,E
+	CP	08H
+	JR	NC,SPBIG
+	LD	(IX+CPTR),L
+	LD	(IX+CPTR+1),H
+	LD	(IX+CPTR+2),E
+	LD	(IX+CPTR+3),D
+	OR	A
+	RET
+SPBIG:	LD	A,EBIG
+	SCF
+	RET
+;
+; ------------------------------------------------------------------
+; F_LOAD - CMDBUF = nombre, DE = direccion, BC = tamanio maximo
+; ------------------------------------------------------------------
+;
+FLOAD:	CALL	SAVUB
+	LD	(WDEST),DE
+	LD	(WMAX),BC
+	LD	HL,CMDBUF
+	LD	DE,NAME1
+	CALL	GETNM
+	RET	C
+	LD	DE,NAME1
+	CALL	FINDU
+	JR	NC,FLU
+	LD	DE,NAME1
+	CALL	FINDR
+	JR	NC,FLR
+	LD	A,EFNF
+	SCF
+	RET
+FLU:	LD	DE,FSENT
+	LD	BC,32
+	LDIR
+	CALL	LDCHK
+	RET	C
+	LD	HL,(FSENT+16)
+	LD	(WSEC),HL
+	LD	HL,(FSENT+18)
+	LD	(WREM),HL
+FLU1:	LD	HL,(WREM)
+	LD	A,H
+	OR	L
+	JR	Z,FLDONE
+	LD	HL,(WSEC)
+	LD	A,H
+	CP	08H
+	JR	NC,FLBAD
+	CALL	RDSEC
+	CALL	MAPR3
+	CALL	GETFAT
+	LD	(WSEC),DE
+	CALL	CHUNK
+	CALL	MAPUB
+	LD	HL,BOUNCE
+	LD	DE,(WDEST)
+	LDIR
+	LD	(WDEST),DE
+	JR	FLU1
+FLDONE:	OR	A
+	RET
+FLBAD:	LD	A,EDISK
+	SCF
+	RET
+FLR:	CALL	LDCHK
+	RET	C
+	LD	HL,(FSENT+18)
+	LD	(WREM),HL
+	LD	HL,(FSENT+26)
+	LD	(WOFF),HL
+	LD	A,(FSENT+28)
+	LD	(WOFF+2),A
+FLR1:	LD	HL,(WREM)
+	LD	A,H
+	OR	L
+	JR	Z,FLDONE
+	CALL	CFCHNK
+	CALL	MAPUB
+	LD	HL,BOUNCE
+	LD	DE,(WDEST)
+	LDIR
+	LD	(WDEST),DE
+	JR	FLR1
+;
+; CHUNK - BC = minimo entre WREM y 256; descuenta BC de WREM
+CHUNK:	LD	HL,(WREM)
+	LD	BC,256
+	LD	A,H
+	OR	A
+	JR	NZ,CHK1
+	LD	C,L
+	LD	B,0
+CHK1:	OR	A
+	SBC	HL,BC
+	LD	(WREM),HL
+	RET
+;
+; CFCHNK - copia el proximo pedazo de un archivo ROM a BOUNCE
+;   (los archivos ROM empiezan en multiplos de 256: nunca cruzan paginas)
+CFCHNK:	CALL	CHUNK
+	LD	HL,(WOFF)
+	LD	A,(WOFF+2)
+	CALL	CFMAP
+	LD	DE,BOUNCE
+	PUSH	BC
+	LDIR
+	POP	BC
+	LD	HL,(WOFF)
+	ADD	HL,BC
+	LD	(WOFF),HL
+	RET	NC
+	LD	HL,WOFF+2
+	INC	(HL)
+	RET
+;
+; LDCHK - CY (A = EBIG) si el archivo de FSENT no entra en WDEST/WMAX
+LDCHK:	LD	A,(FSENT+20)
+	LD	HL,FSENT+21
+	OR	(HL)
+	JR	NZ,LDBIG
+	LD	HL,(WMAX)
+	LD	DE,(FSENT+18)
+	OR	A
+	SBC	HL,DE
+	JR	C,LDBIG
+	LD	HL,(WDEST)
+	LD	A,H
+	CP	0F8H
+	JR	NC,LDOK
+	ADD	HL,DE
+	JR	C,LDBIG
+	LD	A,H
+	CP	0F8H
+	JR	C,LDOK
+	JR	NZ,LDBIG
+	LD	A,L
+	OR	A
+	JR	NZ,LDBIG
+LDOK:	OR	A
+	RET
+LDBIG:	LD	A,EBIG
+	SCF
+	RET
+;
+; ------------------------------------------------------------------
+; F_SAVE - CMDBUF = nombre, DE = comienzo, BC = largo
+;   El archivo viejo (si habia) se reemplaza recien al final.
+; ------------------------------------------------------------------
+;
+FSAVE:	CALL	SAVUB
+	LD	(WSRC),DE
+	LD	(WLOAD),DE
+	LD	(WREM),BC
+	LD	(WLEN),BC
+	XOR	A
+	LD	(WLEN+2),A
+	LD	HL,CMDBUF
+	LD	DE,NAME1
+	CALL	GETNM
+	RET	C
+	LD	HL,0FFFFH
+	LD	(WOLD),HL
+	LD	(WFIRST),HL
+	LD	(WLAST),HL
+	LD	DE,NAME1
+	CALL	FINDU
+	JR	C,FSV1
+	LD	(WIDX),A
+	CALL	ISOPEN
+	RET	C
+	LD	DE,16
+	ADD	HL,DE
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)
+	LD	(WOLD),DE
+	JR	FSV3
+FSV1:	CALL	FREEDIR
+	RET	C
+	LD	(WIDX),A
+FSV3:	LD	HL,(WREM)	;grabar los datos en sectores nuevos
+	LD	A,H
+	OR	L
+	JR	Z,FSV5
+	LD	HL,BOUNCE
+	LD	DE,BOUNCE+1
+	LD	BC,255
+	LD	(HL),0FFH
+	LDIR
+	CALL	CHUNK
+	CALL	MAPUB
+	LD	HL,(WSRC)
+	LD	DE,BOUNCE
+	LDIR
+	LD	(WSRC),HL
+	CALL	ALLOCW
+	JR	C,FSVERR
+	CALL	MAPR3
+	EX	DE,HL
+	LD	HL,(WLAST)
+	LD	A,H
+	AND	L
+	INC	A
+	JR	NZ,FSV4
+	LD	(WFIRST),DE
+	JR	FSV4A
+FSV4:	CALL	PUTFAT
+FSV4A:	LD	(WLAST),DE
+	JR	FSV3
+FSV5:	CALL	MAPR3		;entrada del directorio
+	LD	A,(WIDX)
+	CALL	DIRADR
+	EX	DE,HL
+	LD	HL,NAME1
+	LD	BC,16
+	LDIR
+	EX	DE,HL
+	LD	DE,(WFIRST)
+	LD	(HL),E
+	INC	HL
+	LD	(HL),D
+	INC	HL
+	LD	DE,(WLEN)
+	LD	(HL),E
+	INC	HL
+	LD	(HL),D
+	INC	HL
+	XOR	A
+	LD	(HL),A
+	INC	HL
+	LD	(HL),A
+	INC	HL
+	LD	DE,(WLOAD)
+	LD	(HL),E
+	INC	HL
+	LD	(HL),D
+	INC	HL
+	LD	(HL),E
+	INC	HL
+	LD	(HL),D
+	INC	HL
+	PUSH	HL
+	CALL	PACKDT
+	POP	HL
+	LD	(HL),C
+	INC	HL
+	LD	(HL),B
+	INC	HL
+	LD	(HL),E
+	INC	HL
+	LD	(HL),D
+	INC	HL
+	LD	(HL),0
+	INC	HL
+	LD	(HL),0FFH
+	LD	HL,(WOLD)
+	CALL	FREECH
+	LD	A,(WIDX)
+	CALL	DIRDTY
+	JP	FLUSHM
+FSVERR:	PUSH	AF		;deshacer: liberar lo grabado
+	CALL	MAPR3
+	LD	HL,(WFIRST)
+	CALL	FREECH
+	POP	AF
+	SCF
+	RET
+;
+; ALLOCW - asigna un sector y graba BOUNCE en el (con reintentos)
+;   Salida: HL = sector, o CY con A = error
+ALLOCW:	LD	B,4
+ALW1:	PUSH	BC
+	CALL	MAPR3
+	CALL	ALLOC
+	POP	BC
+	RET	C
+	CALL	WRSEC
+	RET	NC
+	PUSH	BC		;sector fallado: queda reservado
+	CALL	MAPR3
+	LD	DE,FRES
+	CALL	PUTFAT
+	POP	BC
+	DJNZ	ALW1
+	LD	A,EDISK
+	SCF
+	RET
+;
+; F_FREE - HL = sectores libres, DE = archivos del usuario
+FFREEN:	CALL	COUNT
+	OR	A
+	RET
+;
+COUNT:	CALL	MAPR3
+	LD	HL,SDATA
+	LD	BC,0
+CNT1:	CALL	GETFAT
+	LD	A,D
+	AND	E
+	INC	A
+	JR	NZ,CNT2
+	INC	BC
+CNT2:	INC	HL
+	LD	A,H
+	CP	08H
+	JR	C,CNT1
+	PUSH	BC
+	LD	HL,DIR
+	LD	DE,0
+	LD	B,NDIR
+CNT3:	LD	A,(HL)
+	INC	A
+	JR	Z,CNT4
+	DEC	A
+	JR	Z,CNT4
+	INC	DE
+CNT4:	LD	A,L
+	ADD	A,32
+	LD	L,A
+	JR	NC,CNT5
+	INC	H
+CNT5:	DJNZ	CNT3
+	POP	HL
+	RET
+;
+FKEYS:	OR	A
+	RET
+;
+; ==================================================================
+; F_CMD - comandos del disco. A = numero, CMDBUF = argumentos
+; ==================================================================
+;
+FCMD:	PUSH	AF
+	CALL	SAVUB
+	POP	AF
+	LD	HL,CMDBUF
+	DEC	A
+	JP	Z,CAT
+	DEC	A
+	JP	Z,DELETE
+	DEC	A
+	JP	Z,RENAME
+	DEC	A
+	JP	Z,FREE
+	DEC	A
+	JP	Z,FORMAT
+	DEC	A
+	JP	Z,RECV
+	DEC	A
+	JP	Z,SEND
+	DEC	A
+	JP	Z,COPY
+	DEC	A
+	JP	Z,DIRENT
+	DEC	A
+	JP	Z,SCRSAV
+	DEC	A
+	JP	Z,SCRLOD
+	OR	A
+	RET
+;
+; ------------------------------------------------------------------
+; *FOTO nombre / *MOSTRAR nombre: graba o muestra la pantalla entera
+; (los 5120 bytes de la pantalla virtual, RAM pagina 2, 8000-93FF).
+; Se copia de a 256 bytes usando CMDBUF como intermedio.
+; ------------------------------------------------------------------
+;
+MAPVR:	PUSH	DE
+	LD	A,RPVDU
+	LD	E,DEVRAM
+	CALL	NMAPB
+	POP	DE
+	RET
+;
+SCRSAV:	LD	DE,NAME1
+	CALL	GETNM
+	RET	C
+	XOR	A		;abrir para escribir
+	CALL	OPEN1
+	RET	C
+	LD	(WH2),A
+	LD	HL,8000H
+	LD	(WSRC),HL
+SCS1:	CALL	MAPVR		;256 bytes de la pantalla a CMDBUF
+	LD	HL,(WSRC)
+	LD	DE,CMDBUF
+	LD	BC,256
+	LDIR
+	LD	HL,CMDBUF
+	LD	(WDEST),HL
+	XOR	A
+	LD	(WCNT),A
+SCS2:	LD	HL,(WDEST)
+	LD	A,(HL)
+	INC	HL
+	LD	(WDEST),HL
+	LD	(WBYTE),A
+	LD	A,(WH2)
+	LD	E,A
+	CALL	BPUT1
+	JR	C,SCSERR
+	LD	HL,WCNT
+	DEC	(HL)
+	JR	NZ,SCS2
+	LD	HL,(WSRC)
+	INC	H
+	LD	(WSRC),HL
+	LD	A,H
+	CP	94H
+	JR	C,SCS1
+	LD	A,(WH2)
+	LD	E,A
+	JP	CLOSEH
+SCSERR:	PUSH	AF
+	LD	A,(WH2)
+	LD	E,A
+	CALL	CLOSEH
+	POP	AF
+	SCF
+	RET
+;
+SCRLOD:	LD	DE,NAME1
+	CALL	GETNM
+	RET	C
+	LD	A,1		;abrir para leer
+	CALL	OPEN1
+	RET	C
+	OR	A
+	LD	A,EFNF
+	SCF
+	RET	Z
+	LD	A,(IX+CNUM)
+	INC	A
+	LD	(WH),A
+	LD	HL,8000H
+	LD	(WSRC),HL
+SCL1:	LD	HL,CMDBUF
+	LD	(WDEST),HL
+	XOR	A
+	LD	(WCNT),A
+SCL2:	LD	A,(WH)		;256 bytes del archivo a CMDBUF
+	LD	E,A
+	CALL	GETCH
+	CALL	PTRLT
+	JR	NC,SCL8		;fin del archivo
+	LD	A,(WH)
+	LD	E,A
+	XOR	A
+	LD	(FSERRN),A
+	CALL	BGET1
+	LD	HL,(WDEST)
+	LD	(HL),A
+	INC	HL
+	LD	(WDEST),HL
+	LD	A,(FSERRN)
+	OR	A
+	JR	NZ,SCLERR
+	LD	HL,WCNT
+	DEC	(HL)
+	JR	NZ,SCL2
+SCL8:	LD	HL,(WDEST)	;copiar lo leido a la pantalla
+	LD	DE,CMDBUF
+	OR	A
+	SBC	HL,DE
+	LD	B,H
+	LD	C,L
+	LD	A,B
+	OR	C
+	JR	Z,SCL9
+	CALL	MAPVR
+	LD	HL,CMDBUF
+	LD	DE,(WSRC)
+	LDIR
+	LD	HL,(WSRC)
+	INC	H
+	LD	(WSRC),HL
+	LD	A,(WCNT)	;bloque incompleto: era el final
+	OR	A
+	JR	NZ,SCL9
+	LD	A,H
+	CP	94H
+	JR	C,SCL1
+SCL9:	LD	A,(WH)
+	LD	E,A
+	CALL	CLOSEH
+	LD	BC,0028H	;copiar la pantalla entera al LCD
+	LD	DE,0080H
+	CALL	NLCD
+	OR	A
+	RET
+SCLERR:	PUSH	AF
+	LD	A,(WH)
+	LD	E,A
+	CALL	CLOSEH
+	POP	AF
+	SCF
+	RET
+;
+; DIRENT - lee la entrada numero (CMDBUF) del directorio para OSWORD 192.
+; 0..127 = disco del usuario, 128.. = disco de aplicaciones.
+; Devuelve CMDBUF+0 = 0 valida, 1 libre, 2 fin; +1 = disco; +2 = entrada.
+DIRENT:	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)
+	LD	A,D
+	AND	E
+	INC	A
+	JR	NZ,DIRE0
+	CALL	COUNT		;indice FFFF: +2 sectores libres, +4 archivos
+	LD	(CMDBUF+2),HL
+	LD	(CMDBUF+4),DE
+	XOR	A
+	LD	(CMDBUF),A
+	RET
+DIRE0:	LD	A,D
+	OR	A
+	JR	NZ,DIRE2
+	LD	A,E
+	CP	NDIR
+	JR	NC,DIRE2
+	CALL	MAPR3
+	LD	A,E
+	CALL	DIRADR
+	LD	A,(HL)
+	INC	A
+	JR	Z,DIRE1
+	DEC	A
+	JR	Z,DIRE1
+	XOR	A
+	JR	DIRE4
+DIRE1:	LD	A,1
+	LD	(CMDBUF),A
+	OR	A
+	RET
+DIRE2:	LD	HL,-NDIR
+	ADD	HL,DE
+	PUSH	HL
+	CALL	ROMDIR		;BC = cantidad
+	POP	HL
+	JR	C,DIRE9
+	PUSH	HL
+	OR	A
+	SBC	HL,BC
+	POP	HL
+	JR	NC,DIRE9
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	LD	DE,8020H
+	ADD	HL,DE
+	LD	A,1
+DIRE4:	LD	(CMDBUF+1),A
+	LD	DE,CMDBUF+2
+	LD	BC,32
+	LDIR
+	XOR	A
+	LD	(CMDBUF),A
+	RET
+DIRE9:	LD	A,2
+	LD	(CMDBUF),A
+	OR	A
+	RET
+;
+; ------------------------------------------------------------------
+; Salida por pantalla
+; ------------------------------------------------------------------
+;
+PRCH:	PUSH	AF
+	PUSH	BC
+	PUSH	DE
+	PUSH	HL
+	PUSH	IX
+	CALL	NBANK
+	DEFB	PGVDU
+	DEFW	V_WRCH
+	POP	IX
+	POP	HL
+	POP	DE
+	POP	BC
+	POP	AF
+	RET
+;
+PRSTR:	LD	A,(HL)
+	INC	HL
+	OR	A
+	RET	Z
+	CALL	PRCH
+	JR	PRSTR
+;
+PRCRLF:	LD	A,CR
+	CALL	PRCH
+	LD	A,LF
+	JP	PRCH
+;
+PRSP:	LD	A,' '
+	JP	PRCH
+;
+; PRNAME - imprime el nombre de 16 bytes en HL. B = caracteres impresos
+PRNAME:	LD	B,0
+PRN1:	LD	A,(HL)
+	OR	A
+	RET	Z
+	CALL	PRCH
+	INC	HL
+	INC	B
+	LD	A,B
+	CP	16
+	JR	C,PRN1
+	RET
+;
+; PRNUM - imprime WNUM (3 bytes) en decimal, alineado a la derecha en
+;         C caracteres (C = 0: sin relleno)
+PRNUM:	LD	HL,POW10
+	LD	B,7		;cifras
+	LD	E,0		;0 = todavia no hubo cifras
+PNU1:	LD	D,'0'
+PNU2:	PUSH	HL		;restar la potencia mientras se pueda
+	LD	A,(WNUM)
+	SUB	(HL)
+	LD	(WNUM+4),A
+	INC	HL
+	LD	A,(WNUM+1)
+	SBC	A,(HL)
+	LD	(WNUM+5),A
+	INC	HL
+	LD	A,(WNUM+2)
+	SBC	A,(HL)
+	POP	HL
+	JR	C,PNU3
+	LD	(WNUM+2),A
+	LD	A,(WNUM+5)
+	LD	(WNUM+1),A
+	LD	A,(WNUM+4)
+	LD	(WNUM),A
+	INC	D
+	JR	PNU2
+PNU3:	LD	A,D
+	CP	'0'
+	JR	NZ,PNU4
+	LD	A,B
+	CP	1
+	JR	Z,PNU4		;la ultima cifra siempre
+	LD	A,E
+	OR	A
+	JR	NZ,PNU4
+	LD	A,B		;cero a la izquierda: espacio si entra en C
+	CP	C
+	JR	Z,PNU3A
+	JR	NC,PNU5
+PNU3A:	LD	A,' '
+	CALL	PRCH
+	JR	PNU5
+PNU4:	LD	E,1
+	LD	A,D
+	CALL	PRCH
+PNU5:	INC	HL
+	INC	HL
+	INC	HL
+	DEC	B
+	JR	NZ,PNU1
+	RET
+;
+POW10:	DEFB	40H,42H,0FH	;1000000
+	DEFB	0A0H,86H,01H	;100000
+	DEFB	10H,27H,00H	;10000
+	DEFB	0E8H,03H,00H	;1000
+	DEFB	64H,00H,00H	;100
+	DEFB	0AH,00H,00H	;10
+	DEFB	01H,00H,00H	;1
+;
+; PRHL - imprime HL en decimal sin relleno
+PRHL:	LD	(WNUM),HL
+	XOR	A
+	LD	(WNUM+2),A
+	LD	C,A
+	JP	PRNUM
+;
+; Espera una tecla. CY si fue ESC
+WAITK:	LD	A,(FLAGS)
+	OR	A
+	JP	M,WTK9
+	CALL	NKGET
+	JR	C,WTK1
+	HALT
+	JR	WAITK
+WTK1:	CP	KESC
+	JR	Z,WTK9
+	OR	A
+	RET
+WTK9:	SCF
+	RET
+;
+; ------------------------------------------------------------------
+; *CAT - lista el disco
+; ------------------------------------------------------------------
+;
+CAT:	CALL	NBANK		;columnas de la pantalla
+	DEFB	PGVDU
+	DEFW	V_STATE
+	LD	A,L
+	LD	B,0
+CAT0:	INC	B		;campos de 20 por linea
+	SUB	20
+	JR	NC,CAT0
+	DEC	B
+	JR	NZ,CAT0A
+	INC	B
+CAT0A:	LD	A,B
+	LD	(WPER),A
+	XOR	A
+	LD	(WLINES),A
+	CALL	COUNT		;HL = sectores libres, DE = archivos
+	PUSH	DE
+	PUSH	HL
+	LD	HL,MCAT1
+	CALL	PRSTR
+	POP	HL		;KB libres = sectores / 4
+	SRL	H
+	RR	L
+	SRL	H
+	RR	L
+	CALL	PRHL
+	LD	HL,MCAT2
+	CALL	PRSTR
+	POP	HL
+	CALL	PRHL
+	LD	HL,MCAT3
+	CALL	PRSTR
+	CALL	CATNL
+	RET	C
+	XOR	A		;archivos del usuario
+	LD	(WIDX),A
+	LD	(WCOL),A
+CAT1:	CALL	MAPR3
+	LD	A,(WIDX)
+	CALL	DIRADR
+	LD	A,(HL)
+	INC	A
+	JR	Z,CAT2
+	DEC	A
+	JR	Z,CAT2
+	LD	DE,FSENT
+	LD	BC,32
+	LDIR
+	CALL	CATENT
+	RET	C
+CAT2:	LD	HL,WIDX
+	INC	(HL)
+	LD	A,(HL)
+	CP	NDIR
+	JR	C,CAT1
+	CALL	CATEND
+	RET	C
+	CALL	ROMDIR		;disco de aplicaciones
+	JR	C,CAT9
+	PUSH	BC
+	LD	HL,MCAT4
+	CALL	PRSTR
+	CALL	CATNL
+	POP	BC
+	RET	C
+	LD	HL,8020H
+	LD	(WSRC),HL
+	LD	(WCNT),BC
+	XOR	A
+	LD	(WCOL),A
+CAT3:	CALL	ROMDIR
+	LD	HL,(WSRC)
+	LD	DE,FSENT
+	LD	BC,32
+	LDIR
+	LD	(WSRC),HL
+	CALL	CATENT
+	RET	C
+	LD	HL,(WCNT)
+	DEC	HL
+	LD	(WCNT),HL
+	LD	A,H
+	OR	L
+	JR	NZ,CAT3
+	CALL	CATEND
+	RET	C
+CAT9:	OR	A
+	RET
+;
+; CATENT - imprime la entrada de FSENT en una columna de 20
+CATENT:	LD	A,(FLAGS)
+	OR	A
+	JP	M,CATESC
+	LD	HL,FSENT
+	CALL	PRNAME
+	LD	A,13		;rellenar hasta 13
+	SUB	B
+	JR	C,CTE2
+	JR	Z,CTE2
+	LD	B,A
+CTE1:	CALL	PRSP
+	DJNZ	CTE1
+	JR	CTE3
+CTE2:	CALL	PRSP
+CTE3:	LD	HL,(FSENT+18)
+	LD	(WNUM),HL
+	LD	A,(FSENT+20)
+	LD	(WNUM+2),A
+	LD	C,6
+	CALL	PRNUM
+	LD	A,(WCOL)
+	INC	A
+	LD	B,A
+	LD	A,(WPER)
+	CP	B
+	JR	Z,CTE4
+	LD	A,B
+	LD	(WCOL),A
+	CALL	PRSP
+	OR	A
+	RET
+CTE4:	XOR	A
+	LD	(WCOL),A
+	JP	CATNL
+;
+CATEND:	LD	A,(WCOL)
+	OR	A
+	RET	Z
+	XOR	A
+	LD	(WCOL),A
+	JP	CATNL
+;
+; CATNL - nueva linea con pausa cada 13 lineas. CY si se cancelo
+CATNL:	CALL	PRCRLF
+	LD	HL,WLINES
+	INC	(HL)
+	LD	A,(HL)
+	CP	13
+	CCF
+	RET	NC
+	LD	(HL),0
+	LD	HL,MMAS
+	CALL	PRSTR
+	CALL	WAITK
+	PUSH	AF
+	LD	A,CR
+	CALL	PRCH
+	LD	B,20
+CNL1:	CALL	PRSP
+	DJNZ	CNL1
+	LD	A,CR
+	CALL	PRCH
+	POP	AF
+	RET	NC
+CATESC:	LD	HL,FLAGS
+	RES	7,(HL)
+	CALL	NFLUSH
+	LD	A,ECANC
+	SCF
+	RET
+;
+MCAT1:	DEFM	'Disco ALTARIS 80: '
+	DEFB	0
+MCAT2:	DEFM	' KB libres, '
+	DEFB	0
+MCAT3:	DEFM	' archivos'
+	DEFB	0
+MCAT4:	DEFM	'Aplicaciones (solo lectura):'
+	DEFB	0
+MMAS:	DEFM	'-- Pulse una tecla --'
+	DEFB	0
+;
+; *LIBRE
+FREE:	CALL	COUNT
+	PUSH	DE
+	PUSH	HL
+	LD	(WNUM+1),HL	;bytes = sectores * 256
+	XOR	A
+	LD	(WNUM),A
+	LD	C,A
+	CALL	PRNUM
+	LD	HL,MFREE1
+	CALL	PRSTR
+	POP	HL
+	SRL	H
+	RR	L
+	SRL	H
+	RR	L
+	CALL	PRHL
+	LD	HL,MFREE2
+	CALL	PRSTR
+	POP	HL
+	CALL	PRHL
+	LD	HL,MFREE3
+	CALL	PRSTR
+	OR	A
+	RET
+MFREE1:	DEFM	' bytes libres ('
+	DEFB	0
+MFREE2:	DEFM	' KB), '
+	DEFB	0
+MFREE3:	DEFM	' archivos'
+	DEFB	CR,LF,0
+;
+; *BORRAR nombre
+DELETE:	LD	DE,NAME1
+	CALL	GETNM
+	RET	C
+	LD	DE,NAME1
+	CALL	FINDU
+	JR	NC,DEL1
+	LD	DE,NAME1
+	CALL	FINDR
+	LD	A,ERO
+	CCF
+	RET	C
+	LD	A,EFNF
+	SCF
+	RET
+DEL1:	LD	(WIDX),A
+	CALL	ISOPEN
+	RET	C
+	CALL	DELIDX
+	JP	FLUSHM
+;
+; DELIDX - borra la entrada WIDX y libera su cadena (sin grabar)
+DELIDX:	CALL	MAPR3
+	LD	A,(WIDX)
+	CALL	DIRADR
+	PUSH	HL
+	LD	DE,16
+	ADD	HL,DE
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)
+	EX	DE,HL
+	CALL	FREECH
+	POP	HL
+	LD	B,32
+DL2:	LD	(HL),0FFH
+	INC	HL
+	DJNZ	DL2
+	LD	A,(WIDX)
+	JP	DIRDTY
+;
+; *RENOMBRAR viejo nuevo
+RENAME:	LD	DE,NAME1
+	CALL	GETNM
+	RET	C
+	LD	DE,NAME2
+	CALL	GETNM
+	RET	C
+	LD	DE,NAME2
+	CALL	FINDU
+	LD	A,EEXIST
+	CCF
+	RET	C
+	LD	DE,NAME1
+	CALL	FINDU
+	JR	NC,REN1
+	LD	DE,NAME1
+	CALL	FINDR
+	LD	A,ERO
+	CCF
+	RET	C
+	LD	A,EFNF
+	SCF
+	RET
+REN1:	LD	(WIDX),A
+	CALL	ISOPEN
+	RET	C
+	EX	DE,HL
+	LD	HL,NAME2
+	LD	BC,16
+	LDIR
+	LD	A,(WIDX)
+	CALL	DIRDTY
+	JP	FLUSHM
+;
+; *FORMATEAR
+FORMAT:	XOR	A
+	LD	HL,CCBS
+	LD	B,NCH*CCBLEN
+FOR1:	LD	(HL),A
+	INC	HL
+	DJNZ	FOR1
+	LD	HL,MFMT
+	CALL	PRSTR
+	CALL	DOFMT
+	RET	C
+	LD	HL,MOK
+	JP	PRSTR
+MFMT:	DEFM	'Formateando... '
+	DEFB	0
+MOK:	DEFM	'listo.'
+	DEFB	CR,LF,0
+;
+; *COPIAR origen destino
+COPY:	LD	DE,NAME1
+	CALL	GETNM
+	RET	C
+	LD	DE,NAME2
+	CALL	GETNM
+	RET	C
+	LD	DE,NAME2	;el destino no puede ser el mismo archivo
+	LD	HL,NAME1
+	CALL	CMPNM
+	LD	A,EEXIST
+	SCF
+	RET	Z
+	LD	A,1		;abrir el origen
+	CALL	OPEN1
+	RET	C
+	OR	A
+	LD	A,EFNF
+	SCF
+	RET	Z
+	LD	A,(IX+CNUM)
+	INC	A
+	LD	(WH),A
+	LD	HL,NAME2
+	LD	DE,NAME1
+	LD	BC,16
+	LDIR
+	XOR	A		;abrir el destino
+	CALL	OPEN1
+	JR	C,CPERR1
+	LD	(WH2),A
+CPY1:	LD	A,(FLAGS)
+	OR	A
+	JP	M,CPESC
+	LD	A,(WH)
+	LD	E,A
+	CALL	GETCH
+	CALL	PTRLT
+	JR	NC,CPY9		;fin
+	LD	A,(WH)
+	LD	E,A
+	XOR	A
+	LD	(FSERRN),A
+	CALL	BGET1
+	LD	(WBYTE),A
+	LD	A,(FSERRN)
+	OR	A
+	JR	NZ,CPERR2
+	LD	A,(WH2)
+	LD	E,A
+	CALL	BPUT1
+	JR	C,CPERR2
+	JR	CPY1
+CPY9:	LD	A,(WH2)
+	LD	E,A
+	CALL	CLOSEH
+	PUSH	AF
+	LD	A,(WH)
+	LD	E,A
+	CALL	CLOSEH
+	POP	AF
+	RET
+CPESC:	LD	HL,FLAGS
+	RES	7,(HL)
+	LD	A,ECANC
+CPERR2:	PUSH	AF
+	LD	A,(WH2)
+	LD	E,A
+	CALL	CLOSEH
+	POP	AF
+CPERR1:	PUSH	AF
+	LD	A,(WH)
+	LD	E,A
+	CALL	CLOSEH
+	POP	AF
+	SCF
+	RET
+;
+; ==================================================================
+; Transferencias con la PC por el puerto paralelo
+;
+; Protocolo de 3 bits de la MailStation:
+;   salidas (puerto 2DH): bits 0-2 datos, bit 3 ocupado, bit 4 strobe
+;   entradas (puerto 21H): bits 3-5 datos, bit 6 ocupado, bit 7 strobe
+; Paquete: 'A','8', largo (3 bytes), datos, suma de 16 bits de los datos
+; ==================================================================
+;
+; SETTMO - plazo de HL interrupciones (64 por segundo)
+SETTMO:	PUSH	DE
+	LD	DE,(TICKS)
+	ADD	HL,DE
+	LD	(WDEAD),HL
+	POP	DE
+	RET
+;
+; TMOCHK - CY si se vencio el plazo (A = EXFER) o se apreto Volver (ECANC)
+TMOCHK:	LD	A,(FLAGS)
+	OR	A
+	JP	M,TMESC
+	PUSH	HL
+	LD	HL,(TICKS)
+	LD	A,(WDEAD)
+	SUB	L
+	LD	A,(WDEAD+1)
+	SBC	A,H
+	POP	HL
+	JP	M,TMOUT
+	OR	A
+	RET
+TMOUT:	LD	A,EXFER
+	SCF
+	RET
+TMESC:	PUSH	HL
+	LD	HL,FLAGS
+	RES	7,(HL)
+	POP	HL
+	CALL	NFLUSH
+	LD	A,ECANC
+	SCF
+	RET
+;
+; RXTRIB - recibe 3 bits en A
+RXTRIB:	IN	A,(PLPTST)
+	BIT	7,A
+	JR	NZ,RXT2
+	CALL	TMOCHK
+	RET	C
+	JR	RXTRIB
+RXT2:	RRCA
+	RRCA
+	RRCA
+	AND	07H
+	LD	C,A
+	LD	A,08H		;confirmar
+	OUT	(PLPTDAT),A
+RXT3:	IN	A,(PLPTST)
+	BIT	7,A
+	JR	Z,RXT4
+	CALL	TMOCHK
+	RET	C
+	JR	RXT3
+RXT4:	XOR	A		;listo para el proximo
+	OUT	(PLPTDAT),A
+	LD	A,C
+	OR	A
+	RET
+;
+; RXBYTE - recibe un byte en A (destruye BC)
+RXBYTE:	CALL	RXTRIB
+	RET	C
+	LD	B,A
+	CALL	RXTRIB
+	RET	C
+	RLCA
+	RLCA
+	RLCA
+	OR	B
+	LD	B,A
+	CALL	RXTRIB
+	RET	C
+	RRCA
+	RRCA
+	AND	0C0H
+	OR	B
+	PUSH	HL
+	PUSH	AF
+	LD	HL,3*64		;3 segundos para el proximo byte
+	CALL	SETTMO
+	POP	AF
+	POP	HL
+	OR	A
+	RET
+;
+; TXTRIB - manda los 3 bits de A
+TXTRIB:	LD	C,A
+TXT1:	IN	A,(PLPTST)
+	BIT	6,A
+	JR	Z,TXT2
+	CALL	TMOCHK
+	RET	C
+	JR	TXT1
+TXT2:	LD	A,C
+	AND	07H
+	OR	10H
+	OUT	(PLPTDAT),A
+TXT3:	IN	A,(PLPTST)
+	BIT	6,A
+	JR	NZ,TXT4
+	CALL	TMOCHK
+	RET	C
+	JR	TXT3
+TXT4:	LD	A,08H
+	OUT	(PLPTDAT),A
+	OR	A
+	RET
+;
+; TXBYTE - manda el byte A (destruye BC, D)
+TXBYTE:	LD	D,A
+	CALL	TXTRIB
+	RET	C
+	LD	A,D
+	RRCA
+	RRCA
+	RRCA
+	CALL	TXTRIB
+	RET	C
+	LD	A,D
+	RLCA
+	RLCA
+	AND	03H
+	CALL	TXTRIB
+	RET	C
+	PUSH	HL
+	LD	HL,3*64
+	CALL	SETTMO
+	POP	HL
+	OR	A
+	RET
+;
+; SUMADD - agrega A a la suma
+SUMADD:	PUSH	HL
+	PUSH	AF
+	LD	HL,(WSUM)
+	ADD	A,L
+	LD	L,A
+	JR	NC,SUA1
+	INC	H
+SUA1:	LD	(WSUM),HL
+	POP	AF		;A queda igual (*ENVIAR la manda despues)
+	POP	HL
+	RET
+;
+; DECREM - WREM (3 bytes) - 1. Z si llego a cero
+DECREM:	LD	HL,(WREM)
+	LD	A,H
+	OR	L
+	DEC	HL
+	LD	(WREM),HL
+	JR	NZ,DCR1
+	LD	HL,WREM+2
+	DEC	(HL)
+DCR1:	LD	HL,(WREM)
+	LD	A,H
+	OR	L
+	RET	NZ
+	LD	A,(WREM+2)
+	OR	A
+	RET
+;
+; REMZ - Z si WREM = 0
+REMZ:	LD	HL,(WREM)
+	LD	A,H
+	OR	L
+	RET	NZ
+	LD	A,(WREM+2)
+	OR	A
+	RET
+;
+; DOTCHK - imprime un punto cada 1024 bytes
+DOTCHK:	LD	A,(WREM)
+	OR	A
+	RET	NZ
+	LD	A,(WREM+1)
+	AND	03H
+	RET	NZ
+	LD	A,'.'
+	JP	PRCH
+;
+; *RECIBIR nombre - recibe un archivo desde la PC
+RECV:	LD	DE,NAME1
+	CALL	GETNM
+	RET	C
+	LD	HL,MRX1
+	CALL	PRSTR
+	XOR	A		;listo para recibir
+	OUT	(PLPTDAT),A
+	LD	HL,120*64	;2 minutos para empezar
+	CALL	SETTMO
+	CALL	RXBYTE
+	JR	C,XEND
+	CP	'A'
+	JR	NZ,XBAD
+	CALL	RXBYTE
+	JR	C,XEND
+	CP	'8'
+	JR	NZ,XBAD
+	CALL	RXBYTE
+	JR	C,XEND
+	LD	(WREM),A
+	CALL	RXBYTE
+	JR	C,XEND
+	LD	(WREM+1),A
+	CALL	RXBYTE
+	JR	C,XEND
+	LD	(WREM+2),A
+	LD	HL,(WREM)
+	LD	(WLEN),HL
+	LD	A,(WREM+2)
+	LD	(WLEN+2),A
+	XOR	A		;crear el archivo
+	CALL	OPEN1
+	JR	C,XEND
+	LD	(WH),A
+	LD	HL,0
+	LD	(WSUM),HL
+RX1:	CALL	REMZ
+	JR	Z,RX2
+	CALL	RXBYTE
+	JR	C,RXERR
+	LD	(WBYTE),A
+	CALL	SUMADD
+	LD	A,(WH)
+	LD	E,A
+	CALL	BPUT1
+	JR	C,RXERR
+	CALL	DECREM
+	CALL	DOTCHK
+	JR	RX1
+RX2:	CALL	RXBYTE		;suma de control
+	JR	C,RXERR
+	LD	B,A
+	PUSH	BC
+	CALL	RXBYTE
+	POP	BC
+	JR	C,RXERR
+	LD	C,A
+	LD	HL,(WSUM)
+	LD	A,L
+	CP	B
+	JR	NZ,RXBSUM
+	LD	A,H
+	CP	C
+	JR	NZ,RXBSUM
+	LD	A,(WH)
+	LD	E,A
+	CALL	CLOSEH
+	JR	C,XEND
+	CALL	XIDLE
+	LD	HL,MRX2
+	CALL	PRSTR
+	JR	XSIZE
+RXBSUM:	LD	A,EXFER
+RXERR:	PUSH	AF		;borrar el archivo a medio recibir
+	LD	A,(WH)
+	LD	E,A
+	CALL	CLOSEH
+	LD	DE,NAME1
+	CALL	FINDU
+	JR	C,RXE1
+	LD	(WIDX),A
+	CALL	DELIDX
+	CALL	FLUSHM
+RXE1:	POP	AF
+	JR	XEND
+XBAD:	LD	A,EXFER
+XEND:	PUSH	AF
+	CALL	XIDLE
+	CALL	PRCRLF
+	POP	AF
+	SCF
+	RET
+;
+XIDLE:	LD	A,08H		;reposo: ocupado
+	OUT	(PLPTDAT),A
+	RET
+;
+; XSIZE - imprime NAME1 y el largo WLEN
+XSIZE:	LD	HL,NAME1
+	CALL	PRNAME
+	LD	HL,MRX3
+	CALL	PRSTR
+	LD	HL,(WLEN)
+	LD	(WNUM),HL
+	LD	A,(WLEN+2)
+	LD	(WNUM+2),A
+	LD	C,0
+	CALL	PRNUM
+	LD	HL,MRX4
+	CALL	PRSTR
+	OR	A
+	RET
+;
+MRX1:	DEFM	'Esperando el archivo de la PC (Volver cancela)'
+	DEFB	CR,LF,0
+MRX2:	DEFB	CR,LF
+	DEFM	'Recibido: '
+	DEFB	0
+MRX3:	DEFM	' ('
+	DEFB	0
+MRX4:	DEFM	' bytes)'
+	DEFB	CR,LF,0
+MTX1:	DEFM	'Enviando a la PC (Volver cancela)'
+	DEFB	CR,LF,0
+MTX2:	DEFB	CR,LF
+	DEFM	'Enviado: '
+	DEFB	0
+;
+; *ENVIAR nombre - manda un archivo a la PC
+SEND:	LD	DE,NAME1
+	CALL	GETNM
+	RET	C
+	LD	A,1
+	CALL	OPEN1
+	RET	C
+	OR	A
+	LD	A,EFNF
+	SCF
+	RET	Z
+	LD	A,(IX+CNUM)
+	INC	A
+	LD	(WH),A
+	LD	A,(IX+CEXT)
+	LD	(WREM),A
+	LD	(WLEN),A
+	LD	A,(IX+CEXT+1)
+	LD	(WREM+1),A
+	LD	(WLEN+1),A
+	LD	A,(IX+CEXT+2)
+	LD	(WREM+2),A
+	LD	(WLEN+2),A
+	LD	HL,MTX1
+	CALL	PRSTR
+	CALL	XIDLE
+	LD	HL,120*64
+	CALL	SETTMO
+	LD	A,'A'
+	CALL	TXBYTE
+	JR	C,TXERR
+	LD	A,'8'
+	CALL	TXBYTE
+	JR	C,TXERR
+	LD	A,(WREM)
+	CALL	TXBYTE
+	JR	C,TXERR
+	LD	A,(WREM+1)
+	CALL	TXBYTE
+	JR	C,TXERR
+	LD	A,(WREM+2)
+	CALL	TXBYTE
+	JR	C,TXERR
+	LD	HL,0
+	LD	(WSUM),HL
+TX1:	CALL	REMZ
+	JR	Z,TX2
+	LD	A,(WH)
+	LD	E,A
+	XOR	A
+	LD	(FSERRN),A
+	CALL	BGET1
+	LD	(WBYTE),A
+	LD	A,(FSERRN)
+	OR	A
+	JR	NZ,TXERR
+	LD	A,(WBYTE)
+	CALL	SUMADD
+	CALL	TXBYTE
+	JR	C,TXERR
+	CALL	DECREM
+	CALL	DOTCHK
+	JR	TX1
+TX2:	LD	A,(WSUM)
+	CALL	TXBYTE
+	JR	C,TXERR
+	LD	A,(WSUM+1)
+	CALL	TXBYTE
+	JR	C,TXERR
+	LD	A,(WH)
+	LD	E,A
+	CALL	CLOSEH
+	CALL	XIDLE
+	LD	HL,MTX2
+	CALL	PRSTR
+	JP	XSIZE
+TXERR:	PUSH	AF
+	LD	A,(WH)
+	LD	E,A
+	CALL	CLOSEH
+	POP	AF
+	JP	XEND
+;
+	END

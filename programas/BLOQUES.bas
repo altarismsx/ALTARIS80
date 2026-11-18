@@ -1,0 +1,240 @@
+# BLOQUES - encaja las piezas que caen y completa lineas
+REM BLOQUES - (C) 2026 Altaris Software
+ON ERROR GOTO {error}
+MODE 1:VDU 23,1,0;0;0;0;
+DIM W%(9,15),PZ$(6,3),HH%(9)
+VDU 23,162,255,129,189,189,189,189,129,255
+VDU 23,163,255,255,195,195,195,195,255,255
+VDU 23,164,170,85,170,85,170,85,170,85
+VDU 23,165,255,129,129,129,129,129,129,255
+VDU 23,166,255,213,171,213,171,213,171,255
+VDU 23,167,255,255,255,231,231,255,255,255
+VDU 23,168,126,255,219,255,255,219,255,126
+RESTORE {piezas}
+FOR P%=0 TO 6:FOR R%=0 TO 3:READ PZ$(P%,R%):NEXT:NEXT
+REC%=FNleerec
+{inicio} PROCportada
+{juego} PROCarmar
+REPEAT
+PROCnueva
+IF NOT FNcabe(PX%,PY%,PR%) THEN FIN%=TRUE ELSE PROCcae
+UNTIL FIN%
+IF DEMO% THEN GOTO {inicio}
+PROCfin
+IF FNotra THEN GOTO {juego}
+CHAIN "MENU"
+#
+DEF PROCportada
+LOCAL K%
+CLS
+PRINT TAB(13,2);"B L O Q U E S"
+PRINT TAB(11,4);"Altaris Software ";CHR$169;" 2026"
+PRINT TAB(4,7);"Encajá las piezas que caen."
+PRINT TAB(4,8);"Cada línea completa desaparece."
+PRINT TAB(4,10);"Izquierda/derecha: mover"
+PRINT TAB(4,11);"Arriba: girar  Abajo: bajar"
+PRINT TAB(4,12);"Espacio: dejar caer"
+PRINT TAB(4,13);"Récord: ";REC%
+PRINT TAB(4,15);"Pulse Espacio para empezar";
+K%=INKEY(1000):DEMO%=(K%<>32)
+ENDPROC
+#
+DEF PROCarmar
+LOCAL X%,Y%
+CLS
+FOR X%=0 TO 9:FOR Y%=0 TO 15:W%(X%,Y%)=0:NEXT:NEXT
+FOR Y%=0 TO 14:VDU 31,14,Y%,137,31,25,Y%,137:NEXT
+VDU 31,14,15,140:PRINT STRING$(10,CHR$136);CHR$141;
+PRINT TAB(0,0);"BLOQUES";
+IF DEMO% THEN PRINT TAB(0,14);"DEMO";
+PRINT TAB(0,3);"PUNTOS";
+PRINT TAB(0,6);"LINEAS";
+PRINT TAB(0,9);"NIVEL";
+PRINT TAB(0,12);"RECORD";
+PRINT TAB(28,0);"PROXIMA";
+PU%=0:LI%=0:NI%=1:FIN%=FALSE:SG%=RND(7)-1:TD%=TIME+6000
+PROCmarcador
+ENDPROC
+#
+DEF PROCmarcador
+PRINT TAB(0,4);PU%;"   ";
+PRINT TAB(0,7);LI%;"   ";
+PRINT TAB(0,10);NI%;"  ";
+PRINT TAB(0,13);REC%;"   ";
+ENDPROC
+#
+DEF PROCnueva
+PZ%=SG%:SG%=RND(7)-1:PX%=3:PY%=0:PR%=0
+PROCpreview
+IF DEMO% THEN PROCplan
+ENDPROC
+#
+DEF PROCpreview
+LOCAL I%,J%
+FOR J%=2 TO 5:PRINT TAB(28,J%);"    ";:NEXT
+FOR I%=0 TO 3
+VDU 31,28+VAL(MID$(PZ$(SG%,0),I%*2+1,1)),2+VAL(MID$(PZ$(SG%,0),I%*2+2,1)),162+SG%
+NEXT
+ENDPROC
+#
+REM ¿Entra la pieza PZ% con giro R% en X%,Y%?
+DEF FNcabe(X%,Y%,R%)
+LOCAL I%,A%,B%,OK%
+OK%=TRUE
+FOR I%=0 TO 3
+A%=X%+VAL(MID$(PZ$(PZ%,R%),I%*2+1,1)):B%=Y%+VAL(MID$(PZ$(PZ%,R%),I%*2+2,1))
+IF A%<0 OR A%>9 OR B%>14 THEN OK%=FALSE ELSE IF W%(A%,B%) THEN OK%=FALSE
+NEXT
+=OK%
+#
+DEF PROCdibuja(C%)
+LOCAL I%
+FOR I%=0 TO 3
+VDU 31,15+PX%+VAL(MID$(PZ$(PZ%,PR%),I%*2+1,1)),PY%+VAL(MID$(PZ$(PZ%,PR%),I%*2+2,1)),C%
+NEXT
+ENDPROC
+#
+REM La pieza cae hasta que se apoya
+DEF PROCcae
+LOCAL T%,V%,K%,G%,ANT%,N%,FIJO%,MV%
+PROCdibuja(162+PZ%)
+V%=TIME:ANT%=0:FIJO%=FALSE:MV%=0
+REPEAT
+T%=TIME
+IF DEMO% THEN K%=FNdemo ELSE K%=FNteclas
+N%=PX%:G%=PR%
+IF K%=1 THEN N%=PX%-1
+IF K%=2 THEN N%=PX%+1
+IF K%=3 THEN G%=(PR%+1) MOD 4
+IF (N%<>PX% OR G%<>PR%) AND FNcabe(N%,PY%,G%) THEN PROCdibuja(32):PX%=N%:PR%=G%:PROCdibuja(162+PZ%)
+IF K%=5 THEN PROCdibuja(32):WHILE FNcabe(PX%,PY%+1,PR%):PY%=PY%+1:PU%=PU%+2:ENDWHILE:PROCdibuja(162+PZ%):V%=-999
+IF K%=4 OR TIME>=V%+FNvel THEN
+V%=TIME
+IF FNcabe(PX%,PY%+1,PR%) THEN PROCdibuja(32):PY%=PY%+1:PROCdibuja(162+PZ%) ELSE PROCfija:FIJO%=TRUE
+ENDIF
+IF DEMO% THEN IF INKEY(0)>=0 OR TIME>TD% THEN FIN%=TRUE:FIJO%=TRUE
+IF NOT FIJO% THEN REPEAT UNTIL TIME>=T%+5
+UNTIL FIJO%
+ENDPROC
+#
+DEF FNvel
+IF NI%>9 THEN =8
+=90-NI%*9
+#
+REM Teclas: 1 izq, 2 der, 3 girar, 4 bajar, 5 dejar caer
+DEF FNteclas
+LOCAL K%,L%
+K%=0
+L%=INKEY(-26) OR INKEY(-122)
+IF L% THEN MV%=MV%+1 ELSE MV%=0
+IF MV%=1 OR (MV%>3 AND MV% MOD 2=0) THEN K%=2+INKEY(-26)
+IF INKEY(-42) THEN K%=4
+IF INKEY(-58) THEN IF ANT%<>3 THEN K%=3
+IF INKEY(-99) THEN IF ANT%<>5 THEN K%=5
+IF INKEY(-58) THEN ANT%=3 ELSE IF INKEY(-99) THEN ANT%=5 ELSE ANT%=0
+=K%
+#
+REM Modo demostracion: va hacia la columna y el giro planeados
+DEF FNdemo
+IF PR%<>OBR% THEN =3
+IF PX%>OBX% THEN =1
+IF PX%<OBX% THEN =2
+=5
+#
+REM Busca el mejor lugar mirando la altura de cada columna
+DEF PROCplan
+LOCAL R%,X%,Y%,S%,M%,I%,A%,B%,C%,OK%
+FOR X%=0 TO 9:Y%=0:WHILE Y%<15 AND W%(X%,Y%)=0:Y%=Y%+1:ENDWHILE:HH%(X%)=Y%:NEXT
+M%=-99999:OBX%=PX%:OBR%=0
+FOR R%=0 TO 3
+FOR X%=-2 TO 9
+OK%=TRUE:Y%=99
+FOR I%=0 TO 3
+A%=X%+VAL(MID$(PZ$(PZ%,R%),I%*2+1,1)):B%=VAL(MID$(PZ$(PZ%,R%),I%*2+2,1))
+IF A%<0 OR A%>9 THEN OK%=FALSE ELSE IF HH%(A%)-1-B%<Y% THEN Y%=HH%(A%)-1-B%
+NEXT
+IF OK% AND Y%>=0 THEN S%=FNnota(X%,Y%,R%):IF S%>M% THEN M%=S%:OBX%=X%:OBR%=R%
+NEXT
+NEXT
+ENDPROC
+#
+DEF FNnota(X%,Y%,R%)
+LOCAL I%,S%,A%,B%
+S%=Y%*10
+FOR I%=0 TO 3
+A%=X%+VAL(MID$(PZ$(PZ%,R%),I%*2+1,1)):B%=Y%+VAL(MID$(PZ$(PZ%,R%),I%*2+2,1))
+IF B%+1<HH%(A%) THEN S%=S%-8*(HH%(A%)-B%-1)
+NEXT
+=S%
+#
+REM La pieza queda fija: se buscan lineas completas
+DEF PROCfija
+LOCAL I%,Y%,X%,N%,L%
+FOR I%=0 TO 3
+W%(PX%+VAL(MID$(PZ$(PZ%,PR%),I%*2+1,1)),PY%+VAL(MID$(PZ$(PZ%,PR%),I%*2+2,1)))=PZ%+1
+NEXT
+L%=0
+FOR Y%=0 TO 14
+N%=0:FOR X%=0 TO 9:IF W%(X%,Y%) THEN N%=N%+1
+NEXT
+IF N%=10 THEN PROCborra(Y%):L%=L%+1
+NEXT
+IF L%>0 THEN LI%=LI%+L%:PU%=PU%+L%*L%*100*NI%:NI%=1+LI% DIV 10:PROCredibujar:SOUND 1,-15,150,5
+PROCmarcador
+ENDPROC
+#
+DEF PROCborra(Y%)
+LOCAL X%,J%
+FOR X%=0 TO 9:VDU 31,15+X%,Y%,166:NEXT
+FOR J%=Y% TO 1 STEP -1:FOR X%=0 TO 9:W%(X%,J%)=W%(X%,J%-1):NEXT:NEXT
+FOR X%=0 TO 9:W%(X%,0)=0:NEXT
+ENDPROC
+#
+DEF PROCredibujar
+LOCAL X%,Y%,L$
+FOR Y%=0 TO 14
+L$=""
+FOR X%=0 TO 9
+IF W%(X%,Y%) THEN L$=L$+CHR$(161+W%(X%,Y%)) ELSE L$=L$+" "
+NEXT
+PRINT TAB(15,Y%);L$;
+NEXT
+ENDPROC
+#
+DEF PROCfin
+PRINT TAB(15,7);"FIN  DEL ";
+PRINT TAB(15,8);"  JUEGO   ";
+IF PU%>REC% THEN REC%=PU%:PROCgrabarec:PROCmarcador:PRINT TAB(15,10);" ¡RÉCORD! ";
+WAIT 200
+ENDPROC
+#
+DEF FNotra
+LOCAL K$
+PRINT TAB(27,12);"¿Otra?";
+PRINT TAB(27,13);"(S/N)";
+REPEAT K$=GET$:UNTIL INSTR("SsNn",K$)
+=(K$="S" OR K$="s")
+#
+DEF FNleerec
+LOCAL F%,R%
+F%=OPENIN "BLOQUES.REC"
+IF F%=0 THEN =0
+INPUT#F%,R%:CLOSE#F%
+=R%
+#
+DEF PROCgrabarec
+LOCAL F%
+F%=OPENOUT "BLOQUES.REC":PRINT#F%,REC%:CLOSE#F%
+ENDPROC
+#
+{error} IF ERR=17 THEN CHAIN "MENU"
+MODE 0:VDU 23,1,1;0;0;0;:REPORT:PRINT " (línea ";ERL;")":END
+#
+REM Piezas: 4 giros, cada uno con 4 pares x,y dentro de un cuadro de 4x4
+{piezas} DATA "01112131","20212223","02122232","10111213"
+DATA "10201121","10201121","10201121","10201121"
+DATA "10011121","10112112","01112112","10011112"
+DATA "10200111","10112122","11210212","00011112"
+DATA "00101121","20112112","01111222","10011102"
+DATA "00011121","10201112","01112122","10110212"
+DATA "20011121","10111222","01112102","00101112"

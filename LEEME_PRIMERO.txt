@@ -1,0 +1,88 @@
+﻿ALTARIS 80
+Una computadora de los años 80 hecha con una terminal de correo
+Carlos de la Fuente - Altaris Software, 2026
+Contacto: Altaris2000@yahoo.com.ar
+======================================================================
+
+QUÉ ES
+------
+La MailStation es una terminal para mandar mails por la línea de
+teléfono que fabricaba CIDCO y que en la Argentina vendió Telefónica
+Equipos. Hoy ya no sirve para lo que fue hecha, y muchas terminan en la
+basura.
+
+ALTARIS 80 reemplaza su programa interno y la convierte en una
+computadora personal estilo años 80: al prenderla muestra el logo,
+cuenta la memoria y queda lista en BASIC, como las máquinas de antes.
+
+  - BASIC con números de línea y gráficos (basado en el BBC BASIC Z80
+    de R. T. Russell)
+  - Disco interno de unos 500 KB para guardar programas y textos
+  - 8 juegos: Tateti 3D, Pulsenoid, Che Fénix, Rocket Car, Viborita,
+    Bloques, Buscaminas y Ahorcado
+  - 10 utilidades: Reloj, Calendario, Calculadora, Notas, Agenda,
+    Dibujo, Gráficos, Demos, Ayuda y Archivos
+  - Intercambio de archivos con la PC
+
+Se instala SIN ABRIR LA MÁQUINA Y SIN SOLDAR: por el conector de
+impresora de atrás, con un Arduino Uno conectado a la PC.
+
+
+QUÉ HACE FALTA
+--------------
+  - Una MailStation (probado con la de Telefónica Equipos, modelo DET1,
+    firmware 1.03), con su fuente de alimentación.
+  - Un Arduino Uno (o Nano) con su cable USB.
+  - Un conector DB25 macho con bornera de tornillos y 11 cables dupont
+    (o un cable de impresora viejo).
+  - Una PC con Windows, Linux o Mac, con Python 3.
+
+
+POR DÓNDE EMPEZAR
+-----------------
+Todo el paso a paso está en MANUAL.txt. En resumen:
+
+  1. Tipear el "Loader" (97 bytes) en el editor escondido de la
+     MailStation. Se hace una sola vez.
+  2. Armar el cable: 11 cables entre el DB25 y el Arduino
+     (CABLEADO.png).
+  3. Cargarle al Arduino el programa MS_Link.
+  4. Instalar Python y pyserial en la PC.
+  5. Doble clic en INSTALAR_DIRECTO.BAT (o INSTALAR.BAT, que antes
+     guarda una copia del firmware original para poder volver atrás).
+
+Si algo no anda, PROBAR_CABLES.BAT revisa el cable, cable por cable, y
+la comunicación completa.
+
+
+QUÉ HAY EN ESTA CARPETA
+-----------------------
+  LEEME_PRIMERO.txt     este archivo
+  MANUAL.txt            el paso a paso completo, uso y solución de
+                        problemas
+  COMO_FUNCIONA.txt     cómo funciona por dentro: la máquina, el cable,
+                        la instalación, el sistema (para curiosos,
+                        docentes y alumnos)
+  CABLEADO.png          el dibujo del cable
+  imagenes/             foto de la máquina real y pantallas
+  *.BAT                 los programas para hacer doble clic en Windows
+  ALTARIS80.BIN         el sistema completo, listo para grabar
+  INSTALAR.BIN          el instalador que corre en la MailStation
+  CABLES.BIN            la prueba de cables que corre en la MailStation
+  MS_Link/              el programa del Arduino
+  pc/                   el programa de la PC (Python)
+  programas/            los juegos y utilidades en BASIC, como texto
+  fuente/               el código fuente completo de ALTARIS 80
+  LICENCIAS.txt         créditos y licencias
+
+No incluye el firmware original de CIDCO / Telefónica: no hace falta, y
+no se puede compartir porque no es nuestro.
+
+
+ADVERTENCIA
+-----------
+Instalar ALTARIS 80 reemplaza el programa interno de la MailStation. Si
+se corta la energía justo mientras se graba, la máquina puede quedar sin
+arrancar y solo se recupera con un grabador de memorias externo. Con la
+fuente conectada (y las pilas puestas) no pasa. Se hace bajo la propia
+responsabilidad de cada uno.

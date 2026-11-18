@@ -1,0 +1,107 @@
+	TITLE	ALTARIS 80 - MODO ACTUALIZACION
+;
+; UPDATE - copia INSTALAR.BIN del disco de aplicaciones a la RAM del BASIC
+; (pagina 1, 8000H) y salta a el. El instalador queda esperando las ordenes
+; de la PC (altaris_pc.py instalar o restaurar).
+; Se llama desde *ACTUALIZAR o al encender con Fn + Volver apretadas.
+; Si no encuentra el instalador vuelve con CY (y el sistema como estaba).
+;
+	.Z80
+	INCLUDE	defs.inc
+	PUBLIC	UPDATE
+	CSEG
+;
+UPDATE:	DI
+	XOR	A		;ranura A: flash de programa, pagina 8
+	OUT	(PSLADV),A
+	LD	A,PGROMD
+	OUT	(PSLAPG),A
+	LD	A,DEVRAM	;ranura B: RAM del BASIC
+	OUT	(PSLBDV),A
+	LD	A,RPMAIN
+	OUT	(PSLBPG),A
+	LD	HL,4000H	;cabecera del disco
+	LD	DE,UMAG
+	LD	B,6
+UPD1:	LD	A,(DE)
+	CP	(HL)
+	JR	NZ,UPDNO
+	INC	HL
+	INC	DE
+	DJNZ	UPD1
+	LD	BC,(4008H)	;cantidad de archivos
+	LD	HL,4020H
+UPD2:	LD	A,B
+	OR	C
+	JR	Z,UPDNO
+	PUSH	HL
+	LD	DE,UNOM		;comparar los 16 bytes del nombre
+	PUSH	BC
+	LD	B,16
+UPD3:	LD	A,(DE)
+	CP	(HL)
+	JR	NZ,UPD4
+	INC	HL
+	INC	DE
+	DJNZ	UPD3
+UPD4:	POP	BC
+	POP	HL
+	JR	Z,UPD5
+	LD	DE,32
+	ADD	HL,DE
+	DEC	BC
+	JR	UPD2
+UPD5:	PUSH	HL		;encontrado
+	POP	IX
+	LD	C,(IX+18)	;largo (el instalador mide menos de 64 KB)
+	LD	B,(IX+19)
+	LD	A,(IX+27)	;posicion de 24 bits: pagina = posicion / 16384
+	RLCA
+	RLCA
+	AND	03H
+	LD	E,A
+	LD	A,(IX+28)
+	ADD	A,A
+	ADD	A,A
+	OR	E
+	LD	(SCRAP),A
+	LD	L,(IX+26)	;direccion dentro de la pagina, en la ranura A
+	LD	A,(IX+27)	;(se lee antes de cambiar de pagina)
+	AND	3FH
+	OR	40H
+	LD	H,A
+	LD	A,(SCRAP)
+	OUT	(PSLAPG),A
+	LD	DE,8000H
+UPD6:	LD	A,B
+	OR	C
+	JP	Z,8000H		;listo: al instalador
+	LD	A,(HL)
+	LD	(DE),A
+	INC	DE
+	DEC	BC
+	INC	HL
+	BIT	7,H
+	JR	Z,UPD6
+	LD	H,40H		;sigue en la pagina siguiente
+	LD	A,(SCRAP)
+	INC	A
+	LD	(SCRAP),A
+	OUT	(PSLAPG),A
+	JR	UPD6
+UPDNO:	LD	A,(CURAPG)	;no esta: dejar todo como estaba
+	OUT	(PSLAPG),A
+	LD	A,(CURADV)
+	OUT	(PSLADV),A
+	LD	A,(CURBPG)
+	OUT	(PSLBPG),A
+	LD	A,(CURBDV)
+	OUT	(PSLBDV),A
+	EI
+	SCF
+	RET
+;
+UMAG:	DEFM	'ALTROM'
+UNOM:	DEFM	'INSTALAR.BIN'
+	DEFB	0,0,0,0
+	END

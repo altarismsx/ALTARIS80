@@ -1,0 +1,2100 @@
+	TITLE	ALTARIS 80 - SISTEMA OPERATIVO DEL BASIC
+;
+; Capa de sistema operativo para el interprete (pagina 0).
+; Basada en CMOS.Z80 de BBC BASIC (Z80) v5, (C) R.T. Russell 1982-2025,
+; licencia zlib. Version modificada por Altaris Software para la
+; MailStation: teclado, pantalla y disco propios, comandos en castellano.
+;
+	.Z80
+	INCLUDE	defs.inc
+;
+	PUBLIC	OSINIT,OSRDCH,OSWRCH,OSLINE,OSSAVE,OSLOAD,OSOPEN,OSSHUT
+	PUBLIC	OSBGET,OSBPUT,OSSTAT,GETEXT,GETPTR,PUTPTR,PROMPT,RESET
+	PUBLIC	LTRAP,OSCLI,TRAP,BYE,OSWORD,OSBYTE,SCRAP,MSINIT,VWRCH
+	PUBLIC	PSTR,CRLF2,PDEC,TIMSTR,ERRMSG
+;
+	EXTRN	ESCAPE,EXTERR,CRLF,ACCS,CURLIN,AUTONO,VERMSG
+	EXTRN	BANK,KEYGET,KEYCHK,FLUSHK,LEDFLASH,POWOFF,RTCRD,RTCWR
+	EXTRN	INKEYN,UPDATE
+;
+CR	EQU	0DH
+LF	EQU	0AH
+BS	EQU	08H
+BEL	EQU	07H
+;
+;
+	CSEG
+;
+; ------------------------------------------------------------------
+; MSINIT - arranque del sistema (lo llama el nucleo antes del BASIC)
+; ------------------------------------------------------------------
+;
+MSINIT:	XOR	A
+	CALL	BANK
+	DEFB	PGVDU
+	DEFW	V_INIT
+	CALL	BANK
+	DEFB	PGFS
+	DEFW	F_INIT
+	CALL	DEFKEY
+	CALL	BANK
+	DEFB	PGBOOT
+	DEFW	B_START
+	CALL	FLUSHK
+	XOR	A
+	LD	(FLAGS),A
+	RET
+;
+; Textos por omision de las teclas de funcion
+DEFKEY:	LD	HL,KDEFS
+	LD	DE,KEYSTR
+	LD	B,6
+DEFK1:	PUSH	BC
+	PUSH	DE
+	LD	C,(HL)
+	LD	B,0
+	INC	BC
+	LDIR
+	POP	DE
+	EX	DE,HL
+	LD	BC,32
+	ADD	HL,BC
+	EX	DE,HL
+	POP	BC
+	DJNZ	DEFK1
+	RET
+;
+KDEFS:	DEFB	12			;Menu
+	DEFM	'CHAIN"MENU"'
+	DEFB	CR
+	DEFB	5,'LIST',CR			;F1
+	DEFB	4,'RUN',CR			;F2
+	DEFB	5,'LOAD"'			;F3
+	DEFB	5,'SAVE"'			;F4
+	DEFB	5,'*CAT',CR			;F5
+;
+; ------------------------------------------------------------------
+; OSINIT - Inicializa el sistema para el BASIC.
+;   Salida: DE = HIMEM, HL = PAGE, Z=0 si hay que ejecutar ACCS (!BOOT)
+; ------------------------------------------------------------------
+;
+OSINIT:	XOR	A
+	LD	(FLAGS),A
+	LD	(INKEY),A
+	LD	(OPTVAL),A
+	LD	(SPLCH),A
+	LD	(EXECH),A
+	LD	(FKLEN),A
+	LD	(KBARON),A
+	LD	A,10
+	LD	(TRPCNT),A
+; Archivo de arranque automatico !BOOT
+	LD	HL,BOOTNM
+	LD	DE,CMDBUF
+	LD	BC,7
+	LDIR
+	LD	A,1
+	CALL	BANK
+	DEFB	PGFS
+	DEFW	F_OPEN
+	OR	A
+	JR	Z,OSIN1
+	LD	E,A
+	CALL	BANK
+	DEFB	PGFS
+	DEFW	F_CLOSE
+	LD	HL,BOOTNM
+	LD	DE,ACCS
+	LD	BC,6
+	LDIR
+	LD	A,CR
+	LD	(DE),A
+	LD	DE,BHIMEM
+	LD	HL,BPAGE
+	OR	A		;NZ
+	RET
+OSIN1:	LD	DE,BHIMEM
+	LD	HL,BPAGE
+	XOR	A		;Z
+	RET
+;
+BOOTNM:	DEFM	'!BOOT'
+	DEFB	0,0
+;
+; ------------------------------------------------------------------
+; TRAP - Prueba ESC y aborta si esta pendiente.
+; LTRAP - igual.  Destruyen: A,H,L,F
+; ------------------------------------------------------------------
+;
+TRAP:
+LTRAP:	LD	A,(FLAGS)
+	OR	A
+	RET	P
+ABORT:	LD	HL,FLAGS
+	RES	7,(HL)
+	CALL	FLUSHK
+	XOR	A
+	LD	(FKLEN),A
+	CALL	CSROFF
+	JP	ESCAPE
+;
+; ------------------------------------------------------------------
+; OSRDCH - Lee un caracter del teclado (o del archivo de EXEC).
+;   Salida: A = caracter.  Destruye: A,F
+; ------------------------------------------------------------------
+;
+OSRDCH:	LD	A,(FLAGS)
+	RRA
+	JR	C,EXECIN
+	PUSH	HL
+	PUSH	BC
+	CALL	CSRON
+RDCH1:	LD	A,(FLAGS)
+	OR	A
+	JP	M,RDCH8		;ESC pendiente
+	CALL	KEYGET
+	JR	C,RDCH9
+	CALL	CSRBLK
+	HALT			;esperar la proxima interrupcion
+	JR	RDCH1
+RDCH8:	LD	A,KESC
+RDCH9:	PUSH	AF
+	CALL	CSROFF
+	POP	AF
+	POP	BC
+	POP	HL
+	RET
+;
+; Cursor: se dibuja al esperar una tecla y parpadea
+CSRON:	LD	A,(CSRST)
+	OR	A
+	RET	NZ
+	LD	A,(TICKS)
+	LD	(CSRTCK),A
+CSRDRW:	LD	A,1
+	LD	(CSRST),A
+	PUSH	BC
+	PUSH	DE
+	PUSH	HL
+	CALL	BANK
+	DEFB	PGVDU
+	DEFW	V_CSRON
+	POP	HL
+	POP	DE
+	POP	BC
+	RET
+;
+CSROFF:	LD	A,(CSRST)
+	OR	A
+	RET	Z
+CSRERS:	XOR	A
+	LD	(CSRST),A
+	PUSH	BC
+	PUSH	DE
+	PUSH	HL
+	CALL	BANK
+	DEFB	PGVDU
+	DEFW	V_CSROFF
+	POP	HL
+	POP	DE
+	POP	BC
+	RET
+;
+CSRBLK:	LD	A,(CSRTCK)
+	LD	B,A
+	LD	A,(TICKS)
+	SUB	B
+	CP	20
+	RET	C
+	LD	A,(TICKS)
+	LD	(CSRTCK),A
+	LD	A,(CSRST)
+	OR	A
+	JR	NZ,CSRERS
+	JR	CSRDRW
+;
+; EXECIN - lee un byte del archivo de EXEC
+;
+EXECIN:	PUSH	BC
+	PUSH	DE
+	PUSH	HL
+	LD	A,(EXECH)
+	LD	E,A
+	CALL	OSBGET
+	PUSH	AF
+	JR	NC,EXEC2
+	CALL	EXSHUT		;fin del archivo
+EXEC2:	POP	AF
+	POP	HL
+	POP	DE
+	POP	BC
+	PUSH	HL
+	LD	HL,EXPRV
+	CP	LF
+	JR	NZ,EXEC3
+	LD	A,(HL)		;caracter anterior
+	LD	(HL),LF
+	POP	HL
+	CP	CR		;LF despues de CR: se ignora
+	JR	Z,OSRDCH
+	LD	A,CR		;LF solo (archivos de la PC o de Notas) vale CR
+	OR	A
+	RET
+EXEC3:	LD	(HL),A
+	POP	HL
+	OR	A
+	RET
+;
+EXSHUT:	LD	A,(EXECH)
+	OR	A
+	RET	Z
+	LD	E,A
+	XOR	A
+	LD	(EXECH),A
+	LD	HL,FLAGS
+	RES	0,(HL)
+	JP	OSSHUT
+;
+SPSHUT:	LD	A,(SPLCH)
+	OR	A
+	RET	Z
+	LD	E,A
+	XOR	A
+	LD	(SPLCH),A
+	LD	HL,FLAGS
+	RES	1,(HL)
+	JP	OSSHUT
+;
+; ------------------------------------------------------------------
+; OSWRCH - Escribe un caracter en la pantalla (y en el SPOOL).
+;   Entrada: A = caracter.  Destruye: nada
+; ------------------------------------------------------------------
+;
+OSWRCH:	PUSH	AF
+	PUSH	BC
+	PUSH	DE
+	PUSH	HL
+	LD	E,A
+	CALL	EDPUT
+	POP	HL
+	POP	DE
+	POP	BC
+	POP	AF
+	RET
+;
+EDPUT:	LD	A,(FLAGS)
+	BIT	3,A
+	JR	Z,WRCH
+	LD	A,E		;modo EDIT: captura el listado
+	CP	' '
+	RET	C
+	LD	HL,(EDPTR)
+	LD	(HL),E
+	INC	L
+	RET	Z
+	LD	(EDPTR),HL
+	RET
+;
+PROMPT:	CALL	KBARCK
+	LD	E,'>'
+WRCH:	LD	A,E
+	CALL	VWRCH
+	LD	A,(FLAGS)
+	BIT	1,A
+	RET	Z
+	LD	A,(SPLCH)	;SPOOL activo
+	OR	A
+	RET	Z
+	LD	HL,FLAGS
+	RES	1,(HL)
+	PUSH	DE
+	LD	A,E
+	LD	E,0
+	LD	D,A
+	LD	A,(SPLCH)
+	LD	E,A
+	LD	A,D
+	CALL	OSBPUT
+	POP	DE
+	LD	HL,FLAGS
+	SET	1,(HL)
+	RET
+;
+; VWRCH - caracter A directo a la pantalla. Preserva todo.
+;
+VWRCH:	PUSH	AF
+	PUSH	BC
+	PUSH	DE
+	PUSH	HL
+	CALL	BANK
+	DEFB	PGVDU
+	DEFW	V_WRCH
+	POP	HL
+	POP	DE
+	POP	BC
+	POP	AF
+	RET
+;
+; Barra de teclas de funcion en la ultima linea
+KBARCK:	LD	A,(KBAR)
+	OR	A
+	RET	Z
+	LD	A,(KBARON)
+	OR	A
+	RET	NZ
+KBARDR:	LD	A,1
+	LD	(KBARON),A
+	CALL	BANK
+	DEFB	PGVDU
+	DEFW	V_KBAR
+	RET
+;
+; ------------------------------------------------------------------
+; OSLINE - Lee y edita una linea terminada en CR.
+;   Entrada: HL -> buffer (L=0).  Salida: buffer lleno, A=0.
+;   Destruye: A,B,C,D,E,H,L,F
+; ------------------------------------------------------------------
+;
+OSLINE:	LD	A,(FLAGS)
+	BIT	3,A		;modo EDIT?
+	JR	Z,OSL1
+	RES	3,A
+	LD	(FLAGS),A
+	LD	HL,(EDPTR)	;fin del texto capturado
+	LD	(HL),CR
+	LD	L,0
+	LD	C,1
+	CALL	REDRAW		;mostrar el texto
+	JR	OSLOOP
+OSL1:	LD	(HL),CR
+	LD	L,0
+OSLOOP:	CALL	LINKEY
+	LD	C,A
+	LD	A,(FLAGS)
+	OR	A
+	JP	M,OSESC
+	LD	A,C
+	CP	CR
+	JP	Z,OSDONE
+	CP	KDEL
+	JR	Z,OSBACK
+	CP	BS
+	JR	Z,OSBACK
+	CP	KLEFT
+	JR	Z,OSLEFT
+	CP	KRIGHT
+	JR	Z,OSRIGHT
+	CP	KHOME
+	JR	Z,OSHOME
+	CP	KEND
+	JR	Z,OSEND
+	CP	KCOPY
+	JR	Z,OSDELR
+	CP	KUP
+	JR	Z,OSUP
+	CP	KDOWN
+	JR	Z,OSCLR
+	CP	' '
+	JR	C,OSLOOP	;otros controles: se ignoran
+	CP	7FH
+	JR	C,OSINS
+	CP	0A0H
+	JR	C,OSLOOP	;teclas especiales sin uso aqui
+; Insertar un caracter imprimible en la posicion del cursor
+OSINS:	LD	B,A
+	LD	D,H
+	LD	E,L
+OSNS1:	LD	A,(DE)		;buscar el final (CR)
+	CP	CR
+	JR	Z,OSNS2
+	INC	E
+	JR	OSNS1
+OSNS2:	LD	A,E
+	CP	253
+	JR	NC,OSFULL	;buffer lleno
+OSNS3:	LD	A,(DE)		;correr un lugar a la derecha
+	INC	E
+	LD	(DE),A
+	DEC	E
+	LD	A,E
+	CP	L
+	JR	Z,OSNS4
+	DEC	E
+	JR	OSNS3
+OSNS4:	LD	(HL),B
+	LD	A,B
+	CALL	VWRCH
+	INC	L
+	LD	C,1
+	CALL	REDRAW
+	JP	OSLOOP
+OSFULL:	LD	A,BEL
+	CALL	VWRCH
+	JP	OSLOOP
+;
+OSBACK:	LD	A,L		;borrar a la izquierda
+	OR	A
+	JR	Z,OSLOOP
+	LD	A,BS
+	CALL	VWRCH
+	DEC	L
+OSDELR:	LD	A,(HL)		;borrar en el cursor
+	CP	CR
+	JR	Z,OSLOOP
+	LD	D,H
+	LD	E,L
+OSDL1:	INC	E
+	LD	A,(DE)
+	DEC	E
+	LD	(DE),A
+	INC	E
+	CP	CR
+	JR	NZ,OSDL1
+	LD	C,1
+	CALL	REDRAW
+	JP	OSLOOP
+;
+OSLEFT:	LD	A,L
+	OR	A
+	JR	Z,OSLOOP
+	LD	A,BS
+	CALL	VWRCH
+	DEC	L
+	JR	OSLOOP
+;
+OSRIGHT:LD	A,(HL)
+	CP	CR
+	JR	Z,OSLOOP
+	CALL	VWRCH
+	INC	L
+	JR	OSLOOP
+;
+OSHOME:	LD	A,L
+	OR	A
+	JR	Z,OSLOOP
+	LD	A,BS
+	CALL	VWRCH
+	DEC	L
+	JR	OSHOME
+;
+OSEND:	LD	A,(HL)
+	CP	CR
+	JP	Z,OSLOOP
+	CALL	VWRCH
+	INC	L
+	JR	OSEND
+;
+OSCLR:	CALL	OSHOM2		;borrar la linea entera
+	CALL	OLDLEN
+	LD	(HL),CR
+	CALL	REDRAW
+	JP	OSLOOP
+;
+OSUP:	CALL	OSHOM2		;recuperar la ultima linea
+	CALL	OLDLEN
+	PUSH	BC
+	PUSH	HL
+	EX	DE,HL
+	LD	HL,LASTLN
+	LD	B,63
+OSUP1:	LD	A,(HL)
+	LD	(DE),A
+	CP	CR
+	JR	Z,OSUP2
+	INC	HL
+	INC	E
+	DJNZ	OSUP1
+	LD	A,CR
+	LD	(DE),A
+OSUP2:	POP	HL
+	POP	BC
+	CALL	REDRAW
+	JP	OSEND
+;
+; OLDLEN - C = largo del texto desde HL + 1 (para borrar la pantalla)
+OLDLEN:	PUSH	HL
+	LD	C,1
+OLDL1:	LD	A,(HL)
+	CP	CR
+	JR	Z,OLDL2
+	INC	HL
+	INC	C
+	JR	OLDL1
+OLDL2:	POP	HL
+	RET
+;
+; OSHOM2 - lleva el cursor al comienzo (L=0)
+OSHOM2:	LD	A,L
+	OR	A
+	RET	Z
+	LD	A,BS
+	CALL	VWRCH
+	DEC	L
+	JR	OSHOM2
+;
+; REDRAW - reescribe desde el cursor hasta el final, agrega C espacios
+;          y vuelve el cursor a su lugar.
+REDRAW:	PUSH	HL
+	LD	B,0
+RDR1:	LD	A,(HL)
+	CP	CR
+	JR	Z,RDR2
+	CALL	VWRCH
+	INC	HL
+	INC	B
+	JR	RDR1
+RDR2:	LD	A,C
+	OR	A
+	JR	Z,RDR3
+RDR2A:	LD	A,' '
+	CALL	VWRCH
+	INC	B
+	DEC	C
+	JR	NZ,RDR2A
+RDR3:	LD	A,B
+	OR	A
+	JR	Z,RDR5
+RDR4:	LD	A,BS
+	CALL	VWRCH
+	DJNZ	RDR4
+RDR5:	POP	HL
+	RET
+;
+OSESC:	CALL	OSEND1		;ESC: escribir el resto y abortar
+	LD	A,CR
+	CALL	VWRCH
+	LD	A,LF
+	CALL	VWRCH
+	JP	ABORT
+;
+OSEND1:	LD	A,(HL)
+	CP	CR
+	RET	Z
+	CALL	VWRCH
+	INC	L
+	JR	OSEND1
+;
+OSDONE:	CALL	OSEND1
+	LD	A,CR
+	CALL	OSWRCH
+	LD	A,LF
+	CALL	OSWRCH
+; guardar la linea para la tecla Arriba
+	LD	L,0
+	LD	A,(HL)
+	CP	CR
+	JR	Z,OSD1
+	PUSH	HL
+	LD	DE,LASTLN
+	LD	B,63
+OSD0:	LD	A,(HL)
+	LD	(DE),A
+	INC	HL
+	INC	DE
+	CP	CR
+	JR	Z,OSD01
+	DJNZ	OSD0
+	LD	A,CR
+	LD	(DE),A
+OSD01:	POP	HL
+OSD1:	XOR	A
+	LD	L,A
+	LD	(EDPTR),HL
+; EDIT n -> LIST n con captura en el buffer
+	LD	DE,(CURLIN)
+	CP	D
+	RET	NZ
+	CP	E
+	RET	NZ
+	LD	DE,(AUTONO)
+	CP	D
+	RET	NZ
+	CP	E
+	RET	NZ
+	LD	DE,EDITST
+	LD	B,4
+CMPARE:	LD	A,(DE)
+	CP	(HL)
+	LD	A,0
+	RET	NZ
+	INC	HL
+	INC	DE
+	LD	A,(HL)
+	CP	'.'
+	JR	Z,ABBR
+	DJNZ	CMPARE
+ABBR:	XOR	A
+	LD	B,A
+	LD	C,L
+	LD	L,A
+	LD	DE,LISTST
+	EX	DE,HL
+	LDIR
+	LD	HL,FLAGS
+	SET	3,(HL)
+	RET
+;
+EDITST:	DEFM	'EDIT'
+LISTST:	DEFM	'LIST'
+;
+; LINKEY - siguiente tecla para OSLINE, con textos de teclas de funcion
+;
+LINKEY:	LD	A,(FKLEN)
+	OR	A
+	JR	Z,LINK2
+	DEC	A
+	LD	(FKLEN),A
+	PUSH	HL
+	LD	HL,(FKPTR)
+	LD	A,(HL)
+	INC	HL
+	LD	(FKPTR),HL
+	POP	HL
+	RET
+LINK2:	CALL	OSRDCH
+	CP	KMENU
+	JR	Z,LINK3
+	CP	KF1
+	RET	C
+	CP	KF1+5
+	RET	NC
+LINK3:	PUSH	HL
+	SUB	KMENU		;0=Menu, 1..5 = F1..F5
+	LD	L,A
+	LD	H,0
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL		;*32
+	LD	DE,KEYSTR
+	ADD	HL,DE
+	LD	A,(HL)
+	INC	HL
+	LD	(FKPTR),HL
+	LD	(FKLEN),A
+	POP	HL
+	JR	LINKEY
+;
+; ------------------------------------------------------------------
+; Archivos
+; ------------------------------------------------------------------
+;
+; GETNAM - copia el nombre de archivo en HL (termina en CR, espacio o ")
+;          a CMDBUF con un 0 al final. Salida: HL despues del nombre.
+GETNAM:	CALL	SKIPSP
+	LD	DE,CMDBUF
+	LD	B,0
+	CP	'"'
+	JR	NZ,GTN1
+	INC	HL
+	LD	B,'"'
+GTN1:	LD	A,(HL)
+	CP	CR
+	JR	Z,GTN3
+	CP	B
+	JR	Z,GTN2
+	LD	C,A
+	LD	A,B
+	OR	A
+	LD	A,C
+	JR	NZ,GTN4
+	CP	' '
+	JR	Z,GTN3
+	CP	','
+	JR	Z,GTN3
+GTN4:	LD	(DE),A
+	INC	DE
+	INC	HL
+	LD	A,E
+	CP	40
+	JR	C,GTN1
+	JR	GTN3
+GTN2:	INC	HL
+GTN3:	XOR	A
+	LD	(DE),A
+	JP	SKIPSP
+;
+; FSCHK - convierte un error del disco en error del BASIC
+;   Entrada: CY = error, A = numero de error del disco
+FSCHK:	RET	NC
+FSERR:	LD	(FSERRN),A
+	LD	HL,FSERRS
+FSE1:	LD	A,(HL)
+	OR	A
+	JR	Z,FSE3
+	LD	B,A
+	INC	HL
+	LD	A,(FSERRN)
+	CP	B
+	JR	Z,FSE3
+FSE2:	LD	A,(HL)
+	INC	HL
+	OR	A
+	JR	NZ,FSE2
+	JR	FSE1
+FSE3:	LD	DE,ERRBUF	;copiar mensaje y lanzar el error
+	LD	A,(HL)
+	INC	HL
+	LD	C,A		;numero de error BBC
+FSE4:	LD	A,(HL)
+	LD	(DE),A
+	INC	HL
+	INC	DE
+	OR	A
+	JR	NZ,FSE4
+	LD	A,C
+	LD	HL,ERRBUF
+	PUSH	HL
+	JP	EXTERR
+;
+; Tabla: codigo del disco, numero de error BBC, mensaje
+FSERRS:	DEFB	1,214
+	DEFM	'Archivo no encontrado'
+	DEFB	0
+	DEFB	2,198
+	DEFM	'Disco lleno'
+	DEFB	0
+	DEFB	3,192
+	DEFM	'Demasiados archivos abiertos'
+	DEFB	0
+	DEFB	4,222
+	DEFM	'Canal inv'
+	DEFB	1,0E1H
+	DEFM	'lido'
+	DEFB	0
+	DEFB	5,193
+	DEFM	'Disco de solo lectura'
+	DEFB	0
+	DEFB	6,204
+	DEFM	'Nombre inv'
+	DEFB	1,0E1H
+	DEFM	'lido'
+	DEFB	0
+	DEFB	7,196
+	DEFM	'El archivo ya existe'
+	DEFB	0
+	DEFB	8,199
+	DEFM	'Error de disco'
+	DEFB	0
+	DEFB	9,192
+	DEFM	'Directorio lleno'
+	DEFB	0
+	DEFB	10,190
+	DEFM	'Archivo demasiado grande'
+	DEFB	0
+	DEFB	11,194
+	DEFM	'Archivo abierto'
+	DEFB	0
+	DEFB	12,223
+	DEFM	'Fin de archivo'
+	DEFB	0
+	DEFB	13,202
+	DEFM	'Error de transmisi'
+	DEFB	1,0F3H
+	DEFM	'n'
+	DEFB	0
+	DEFB	14,17
+	DEFM	'Cancelado'
+	DEFB	0
+	DEFB	0,199
+	DEFM	'Error de disco'
+	DEFB	0
+;
+; OSSAVE - graba memoria en un archivo
+;   HL -> nombre (CR), DE = comienzo, BC = largo
+OSSAVE:	PUSH	DE
+	PUSH	BC
+	CALL	GETNAM
+	POP	BC
+	POP	DE
+	CALL	BANK
+	DEFB	PGFS
+	DEFW	F_SAVE
+	JR	FSCHK
+;
+; OSLOAD - carga un archivo en memoria
+;   HL -> nombre, DE = direccion, BC = tamanio maximo
+;   Salida: CY=0 si no entra
+OSLOAD:	PUSH	DE
+	PUSH	BC
+	CALL	GETNAM
+	POP	BC
+	POP	DE
+	CALL	BANK
+	DEFB	PGFS
+	DEFW	F_LOAD
+	JR	NC,OSLD1
+	CP	10
+	JR	NZ,FSERR
+	OR	A		;no entra
+	RET
+OSLD1:	SCF
+	RET
+;
+; OSOPEN - abre un archivo
+;   HL -> nombre, CY=1 para leer (A=0 OPENIN, A=1 OPENUP), CY=0 OPENOUT
+;   Salida: A = canal (0 si no se puede)
+OSOPEN:	PUSH	AF
+	CALL	GETNAM
+	POP	AF
+	JR	C,OSOP1
+	XOR	A		;0 = OPENOUT
+	JR	OSOP2
+OSOP1:	INC	A		;1 = OPENIN, 2 = OPENUP
+OSOP2:	CALL	BANK
+	DEFB	PGFS
+	DEFW	F_OPEN
+	JR	C,FSERR
+	RET
+;
+; OSSHUT - cierra el canal E (0 = todos)
+OSSHUT:	LD	A,E
+	OR	A
+	JR	NZ,OSSH1
+	LD	E,1		;todos menos SPOOL y EXEC
+OSSH0:	LD	A,(SPLCH)
+	CP	E
+	JR	Z,OSSH2
+	LD	A,(EXECH)
+	CP	E
+	JR	Z,OSSH2
+	PUSH	DE
+	CALL	BANK
+	DEFB	PGFS
+	DEFW	F_CLOSE
+	POP	DE
+OSSH2:	INC	E
+	LD	A,E
+	CP	5
+	JR	C,OSSH0
+	OR	A
+	RET
+OSSH1:	CALL	BANK
+	DEFB	PGFS
+	DEFW	F_CLOSE
+	JR	FSCHK
+;
+; OSBGET - lee un byte del canal E. Salida: A, CY=ultimo byte
+OSBGET:	PUSH	DE
+	PUSH	HL
+	PUSH	BC
+	CALL	BANK
+	DEFB	PGFS
+	DEFW	F_BGET
+	POP	BC
+	POP	HL
+	POP	DE
+	PUSH	AF
+	LD	A,(FSERRN)
+	OR	A
+	JR	NZ,OSBGE
+	POP	AF
+	RET
+OSBGE:	POP	AF
+	LD	A,(FSERRN)
+	CP	EEOF		;leer despues del final no es error:
+	JP	NZ,FSERR	;devuelve CR (asi GET$# termina la ultima
+	XOR	A		;linea aunque no tenga fin de linea)
+	LD	(FSERRN),A
+	LD	A,CR
+	SCF
+	RET
+;
+; OSBPUT - escribe A en el canal E
+OSBPUT:	PUSH	DE
+	PUSH	HL
+	PUSH	BC
+	CALL	BANK
+	DEFB	PGFS
+	DEFW	F_BPUT
+	POP	BC
+	POP	HL
+	POP	DE
+	JP	C,FSERR
+	RET
+;
+; OSSTAT - Z si fin de archivo
+OSSTAT:	CALL	BANK
+	DEFB	PGFS
+	DEFW	F_STAT
+	JP	C,FSERR
+	RET
+;
+; GETEXT - largo del archivo en DEHL
+GETEXT:	CALL	BANK
+	DEFB	PGFS
+	DEFW	F_EXT
+	JP	C,FSERR
+	RET
+;
+; GETPTR - puntero en DEHL
+GETPTR:	CALL	BANK
+	DEFB	PGFS
+	DEFW	F_PTR
+	JP	C,FSERR
+	RET
+;
+; PUTPTR - A = canal, DEHL = nuevo puntero
+PUTPTR:	CALL	BANK
+	DEFB	PGFS
+	DEFW	F_SPTR
+	JP	C,FSERR
+	RET
+;
+; ------------------------------------------------------------------
+; OSCLI - comandos del sistema (*COMANDO)
+; ------------------------------------------------------------------
+;
+OSCLI:	CALL	SKIPSP
+	CP	CR
+	RET	Z
+	CP	'|'
+	RET	Z
+	CP	'.'
+	JP	Z,DOT
+	EX	DE,HL
+	LD	HL,COMDS
+OSCLI0:	LD	A,(DE)
+	CALL	UPPRC
+	CP	(HL)
+	JR	Z,OSCLI2
+	JP	C,HUH
+OSCLI1:	BIT	7,(HL)
+	INC	HL
+	JR	Z,OSCLI1
+	INC	HL
+	INC	HL
+	LD	A,(HL)
+	CP	0FFH
+	JP	Z,HUH
+	JR	OSCLI0
+;
+OSCLI2:	PUSH	DE
+OSCLI3:	INC	DE
+	INC	HL
+	LD	A,(DE)
+	CALL	UPPRC
+	CP	'.'
+	JR	Z,OSCLI4
+	XOR	(HL)
+	JR	Z,OSCLI3
+	CP	80H
+	JR	Z,OSCLI4
+	POP	DE
+	JR	OSCLI1
+;
+OSCLI4:	POP	AF
+	INC	DE
+OSCLI5:	BIT	7,(HL)
+	INC	HL
+	JR	Z,OSCLI5
+	LD	A,(HL)
+	INC	HL
+	LD	H,(HL)
+	LD	L,A
+	PUSH	HL
+	EX	DE,HL
+	JP	SKIPSP
+;
+HUH:	LD	A,254
+	CALL	EXTERR
+	DEFM	'Comando inv'
+	DEFB	1,0E1H
+	DEFM	'lido'
+	DEFB	0
+;
+SKIPSP:	LD	A,(HL)
+	CP	' '
+	RET	NZ
+	INC	HL
+	JR	SKIPSP
+;
+UPPRC:	AND	7FH
+	CP	'`'
+	RET	C
+	AND	5FH
+	RET
+;
+; Comandos que van al banco del disco: A = numero, CMDBUF = argumentos
+DSKCMD:	PUSH	AF
+	CALL	GETARG
+	POP	AF
+	CALL	BANK
+	DEFB	PGFS
+	DEFW	F_CMD
+	JP	FSCHK
+;
+; GETARG - copia el resto de la linea a CMDBUF (termina en 0)
+GETARG:	CALL	SKIPSP
+	LD	DE,CMDBUF
+GTA1:	LD	A,(HL)
+	CP	CR
+	JR	Z,GTA2
+	LD	(DE),A
+	INC	HL
+	INC	DE
+	LD	A,E
+	CP	250
+	JR	C,GTA1
+GTA2:	XOR	A
+	LD	(DE),A
+	RET
+;
+DOT:	INC	HL
+CAT:	LD	A,1		;*CAT
+	JR	DSKCMD
+DELETE:	LD	A,2		;*DELETE nombre
+	JR	DSKCMD
+RENAME:	LD	A,3		;*RENAME viejo nuevo
+	JR	DSKCMD
+FREE:	LD	A,4		;*LIBRE
+	JR	DSKCMD
+FORMAT:	CALL	SEGURO		;*FORMATEAR
+	RET	NZ
+	LD	A,5
+	JR	DSKCMD
+RECV:	LD	A,6		;*RECIBIR nombre
+	JR	DSKCMD
+SEND:	LD	A,7		;*ENVIAR nombre
+	JR	DSKCMD
+COPYC:	LD	A,8		;*COPIAR origen destino
+	JR	DSKCMD
+FOTO:	LD	A,10		;*FOTO nombre (graba la pantalla)
+	JR	DSKCMD
+MOSTRA:	LD	A,11		;*MOSTRAR nombre (muestra una foto)
+	JR	DSKCMD
+;
+; SEGURO - pregunta "Seguro (S/N)?". Z si responde S.
+SEGURO:	PUSH	HL
+	LD	HL,MSEG
+	CALL	PSTR
+	CALL	OSRDCH
+	PUSH	AF
+	CALL	VWRCH
+	CALL	CRLF2
+	POP	AF
+	POP	HL
+	AND	0DFH
+	CP	'S'
+	RET
+MSEG:	DEFB	0BFH
+	DEFM	'Seguro? (S/N) '
+	DEFB	0
+;
+UPDCMD:	CALL	SEGURO		;*ACTUALIZAR
+	RET	NZ
+	LD	HL,MUPD
+	CALL	PSTR
+	CALL	UPDATE		;no vuelve si encuentra el instalador
+	LD	A,EFNF
+	JP	FSERR
+MUPD:	DEFM	'Modo actualizaci'
+	DEFB	0F3H
+	DEFM	'n: segu'
+	DEFB	0EDH
+	DEFM	' en la PC con altaris_pc.py'
+	DEFB	CR,LF,0
+;
+; *TYPE / *VER nombre - muestra un archivo de texto
+TYPE:	SCF
+	LD	A,0
+	CALL	OSOPEN
+	OR	A
+	JP	Z,NOTFND
+	LD	E,A
+	LD	D,0		;D = caracter anterior
+TYPE1:	CALL	LTRAP0
+	CALL	OSBGET		;acarreo = ultimo byte del archivo
+	PUSH	AF
+	LD	B,D
+	LD	D,A
+	CP	LF
+	JR	NZ,TYPE2
+	LD	A,B		;LF despues de CR: la linea ya se termino
+	CP	CR
+	JR	Z,TYPE3
+	LD	A,CR		;LF solo (archivos de la PC o de Notas)
+TYPE2:	CALL	OSWRCH
+	CP	CR
+	JR	NZ,TYPE3
+	LD	A,LF
+	CALL	OSWRCH
+TYPE3:	POP	AF
+	JR	NC,TYPE1
+	JP	OSSHUT
+;
+LTRAP0:	LD	A,(FLAGS)
+	OR	A
+	RET	P
+	CALL	OSSHUT
+	JP	ABORT
+;
+NOTFND:	LD	A,1
+	JP	FSERR
+;
+; *EXEC nombre - toma el teclado de un archivo
+EXEC:	PUSH	HL
+	CALL	EXSHUT
+	POP	HL
+	LD	A,(HL)
+	CP	CR
+	RET	Z
+	SCF
+	LD	A,0
+	CALL	OSOPEN
+	OR	A
+	JP	Z,NOTFND
+	LD	(EXECH),A
+	XOR	A
+	LD	(EXPRV),A
+	LD	HL,FLAGS
+	SET	0,(HL)
+	RET
+;
+; *SPOOL nombre - copia la salida de pantalla a un archivo
+SPOOL:	PUSH	HL
+	CALL	SPSHUT
+	POP	HL
+	LD	A,(HL)
+	CP	CR
+	RET	Z
+	OR	A		;CY=0: OPENOUT
+	CALL	OSOPEN
+	OR	A
+	JP	Z,NOTFND
+	LD	(SPLCH),A
+	LD	HL,FLAGS
+	SET	1,(HL)
+	RET
+;
+; *SAVE nombre comienzo fin|+largo   *LOAD nombre [direccion]
+STSAVE:	CALL	SAVLOD
+	JP	C,HUH
+	PUSH	HL
+	PUSH	BC
+	PUSH	DE
+	LD	HL,CMDBUF
+	LD	DE,ACCS
+	LD	BC,42
+	LDIR
+	POP	DE
+	POP	BC
+	POP	HL
+	LD	HL,ACCS
+	LD	A,CR
+	PUSH	HL
+STSV1:	LD	A,(HL)
+	INC	HL
+	OR	A
+	JR	NZ,STSV1
+	DEC	HL
+	LD	(HL),CR
+	POP	HL
+	JP	OSSAVE
+;
+STLOAD:	CALL	GETNAM
+	CALL	HEX		;DE = direccion
+	PUSH	DE
+	LD	HL,CMDBUF
+	LD	DE,ACCS
+	LD	BC,42
+	LDIR
+	LD	HL,ACCS
+STLD1:	LD	A,(HL)
+	INC	HL
+	OR	A
+	JR	NZ,STLD1
+	DEC	HL
+	LD	(HL),CR
+	POP	DE
+	LD	HL,0
+	OR	A
+	SBC	HL,DE
+	LD	B,H
+	LD	C,L		;BC = espacio hasta el final de la memoria
+	LD	HL,ACCS
+	CALL	OSLOAD
+	RET	C
+	LD	A,190
+	CALL	EXTERR
+	DEFM	'No entra en memoria'
+	DEFB	0
+;
+SAVLOD:	CALL	GETNAM
+	CALL	HEX
+	CP	'+'
+	PUSH	AF
+	PUSH	DE
+	JR	NZ,SAVLO1
+	INC	HL
+SAVLO1:	CALL	HEX
+	CP	CR
+	JP	NZ,HUH
+	EX	DE,HL
+	POP	DE
+	POP	AF
+	LD	B,H
+	LD	C,L
+	RET	Z
+	OR	A
+	SBC	HL,DE
+	LD	B,H
+	LD	C,L
+	RET	NC
+	JP	HUH
+;
+; HEX - lee un numero hexadecimal. Salida: DE = valor, A = terminador
+HEX:	LD	DE,0
+	CALL	SKIPSP
+HEX1:	LD	A,(HL)
+	CALL	UPPRC
+	CP	'0'
+	JR	C,SKIPSP
+	CP	':'
+	JR	C,HEX2
+	CP	'A'
+	JR	C,SKIPSP
+	CP	'G'
+	JR	NC,SKIPSP
+	SUB	7
+HEX2:	AND	0FH
+	EX	DE,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	EX	DE,HL
+	OR	E
+	LD	E,A
+	INC	HL
+	JR	HEX1
+;
+; *OPT n
+OPT:	CALL	HEX
+	LD	A,E
+	AND	3
+SETOPT:	LD	(OPTVAL),A
+	RET
+;
+RESET:	XOR	A
+	JR	SETOPT
+;
+; *ESC ON/OFF (o *ESC 0/1)
+ESCCTL:	CALL	UPPRC2
+	CP	'O'
+	JR	NZ,ESCC1
+	INC	HL
+	LD	A,(HL)
+	CALL	UPPRC
+	CP	'N'
+	LD	HL,FLAGS
+	JR	NZ,ESCOFF
+	RES	6,(HL)
+	RET
+ESCOFF:	SET	6,(HL)
+	RET
+ESCC1:	CALL	HEX
+	LD	A,E
+	OR	A
+	LD	HL,FLAGS
+	RES	6,(HL)
+	RET	Z
+	SET	6,(HL)
+	RET
+;
+UPPRC2:	LD	A,(HL)
+	JP	UPPRC
+;
+; *TECLAS ON/OFF - barra de teclas de funcion
+KBCMD:	CALL	UPPRC2
+	CP	'O'
+	JP	NZ,HUH
+	INC	HL
+	LD	A,(HL)
+	CALL	UPPRC
+	CP	'N'
+	JR	NZ,KBOFF
+	LD	A,1
+	LD	(KBAR),A
+	XOR	A
+	LD	(KBARON),A
+	RET
+KBOFF:	XOR	A
+	LD	(KBAR),A
+	LD	A,(KBARON)
+	OR	A
+	RET	Z
+	XOR	A
+	LD	(KBARON),A
+	CALL	BANK
+	DEFB	PGVDU
+	DEFW	V_KBAR		;A=0: quitar la barra
+	RET
+;
+; *KEY n texto - define una tecla de funcion (n = 0 Menu, 1-5 F1-F5)
+KEYCMD:	CALL	HEX
+	LD	A,E
+	CP	6
+	JP	NC,HUH
+	PUSH	HL
+	LD	L,A
+	LD	H,0
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	LD	DE,KEYSTR
+	ADD	HL,DE
+	EX	DE,HL		;DE -> entrada
+	POP	HL
+	PUSH	DE
+	INC	DE
+	LD	B,0		;largo
+KEYC1:	LD	A,(HL)
+	CP	CR
+	JR	Z,KEYC4
+	INC	HL
+	CP	'"'
+	JR	Z,KEYC1		;las comillas exteriores se ignoran
+	CP	'|'
+	JR	NZ,KEYC3
+	LD	A,(HL)
+	INC	HL
+	CALL	UPPRC
+	CP	'M'
+	LD	C,CR
+	JR	Z,KEYC2
+	DEC	HL
+	LD	A,(HL)
+	INC	HL
+	LD	C,A
+KEYC2:	LD	A,C
+KEYC3:	LD	(DE),A
+	INC	DE
+	INC	B
+	LD	A,B
+	CP	31
+	JR	C,KEYC1
+KEYC4:	POP	DE
+	LD	A,B
+	LD	(DE),A
+	XOR	A
+	LD	(KBARON),A	;redibujar la barra
+	RET
+;
+; *MENU - ejecuta el programa MENU al volver al indicador
+MENU:	LD	HL,KEYSTR
+	LD	A,(HL)
+	INC	HL
+	LD	(FKPTR),HL
+	LD	(FKLEN),A
+	RET
+;
+; *HORA [hh:mm:ss]   *FECHA [dd/mm/aaaa]
+HORA:	LD	A,(HL)
+	CP	CR
+	CALL	NZ,HORAS
+	CALL	TIMSTR
+	LD	HL,SCRAP+16	;hh:mm:ss
+	LD	B,8
+	JR	PRTN
+;
+; HORAS - pone la hora desde "hh:mm:ss" (sin mostrar nada)
+HORAS:	PUSH	HL
+	LD	HL,SCRAP+40
+	CALL	RTCRD
+	POP	HL
+	CALL	NUM2
+	LD	(SCRAP+42),A
+	CALL	NUM2
+	LD	(SCRAP+41),A
+	CALL	NUM2
+	LD	(SCRAP+40),A
+	LD	HL,SCRAP+40
+	JP	RTCWR
+;
+FECHA:	LD	A,(HL)
+	CP	CR
+	JR	Z,FECHA1
+	PUSH	HL
+	LD	HL,SCRAP+40
+	CALL	RTCRD
+	POP	HL
+	CALL	NUM2
+	LD	(SCRAP+44),A	;dia
+	CALL	NUM2
+	LD	(SCRAP+45),A	;mes
+	CALL	NUM2		;siglo (se ignora)
+	CALL	NUM2
+	ADD	A,20		;anios desde 1980
+	LD	(SCRAP+46),A
+	CALL	DOW
+	LD	(SCRAP+43),A
+	LD	HL,SCRAP+40
+	CALL	RTCWR
+FECHA1:	CALL	TIMSTR
+	LD	HL,SCRAP
+	LD	B,15		;Dia,dd Mes aaaa
+PRTN:	LD	A,(HL)
+	CALL	OSWRCH
+	INC	HL
+	DJNZ	PRTN
+	JP	CRLF2
+;
+; NUM2 - lee dos digitos decimales (saltea separadores). A = valor
+NUM2:	LD	A,(HL)
+	CP	CR
+	JR	Z,NUM29
+	SUB	'0'
+	CP	10
+	JR	C,NUM21
+	INC	HL
+	JR	NUM2
+NUM21:	LD	C,A
+	INC	HL
+	LD	A,(HL)
+	SUB	'0'
+	CP	10
+	JR	NC,NUM22
+	INC	HL
+	LD	B,A
+	LD	A,C
+	ADD	A,A
+	ADD	A,A
+	ADD	A,C
+	ADD	A,A
+	ADD	A,B
+	RET
+NUM22:	LD	A,C
+	RET
+NUM29:	XOR	A
+	RET
+;
+; DOW - dia de la semana para la fecha en SCRAP+44..46 (0=domingo)
+DOW:	PUSH	HL
+	LD	A,(SCRAP+46)	;anios desde 1980
+	LD	E,A
+	LD	D,0		;dias = anio*365 + bisiestos + dias del mes + dia
+	LD	HL,0
+	LD	B,E
+	LD	A,B
+	OR	A
+	JR	Z,DOW2
+DOW1:	PUSH	BC
+	LD	BC,365
+	ADD	HL,BC
+	POP	BC
+	DJNZ	DOW1
+DOW2:	LD	A,E
+	ADD	A,3
+	SRL	A
+	SRL	A		;bisiestos anteriores (1980 es bisiesto)
+	LD	C,A
+	LD	B,0
+	ADD	HL,BC
+	LD	A,(SCRAP+45)
+	DEC	A
+	LD	C,A
+	LD	B,0
+	PUSH	HL
+	LD	HL,MDAYS
+	ADD	HL,BC
+	ADD	HL,BC
+	LD	C,(HL)
+	INC	HL
+	LD	B,(HL)
+	POP	HL
+	ADD	HL,BC
+	LD	A,E
+	AND	3
+	JR	NZ,DOW3
+	LD	A,(SCRAP+45)
+	CP	3
+	JR	C,DOW3
+	INC	HL		;anio bisiesto despues de febrero
+DOW3:	LD	A,(SCRAP+44)
+	LD	C,A
+	LD	B,0
+	ADD	HL,BC
+	INC	HL		;1/1/1980 fue martes
+	LD	C,7
+	CALL	DIV16
+	POP	HL
+	RET
+;
+MDAYS:	DEFW	0,31,59,90,120,151,181,212,243,273,304,334
+;
+; DIV16 - HL = HL / C, A = resto
+DIV16:	XOR	A
+	LD	B,16
+DIV1:	ADD	HL,HL
+	RLA
+	CP	C
+	JR	C,DIV2
+	SUB	C
+	INC	L
+DIV2:	DJNZ	DIV1
+	RET
+;
+; TIMSTR - arma "Dia,dd Mes aaaa.hh:mm:ss" (25 bytes) en SCRAP
+TIMSTR:	LD	HL,SCRAP+40
+	CALL	RTCRD
+	LD	A,(SCRAP+43)	;dia de la semana
+	AND	07H
+	LD	C,A
+	ADD	A,A
+	ADD	A,C
+	LD	C,A
+	LD	B,0
+	LD	HL,DIAS
+	ADD	HL,BC
+	LD	DE,SCRAP
+	LD	BC,3
+	LDIR
+	LD	A,','
+	LD	(DE),A
+	INC	DE
+	LD	A,(SCRAP+44)
+	CALL	PUT2
+	LD	A,' '
+	LD	(DE),A
+	INC	DE
+	LD	A,(SCRAP+45)
+	DEC	A
+	CP	12
+	JR	C,TMS1
+	XOR	A
+TMS1:	LD	C,A
+	ADD	A,A
+	ADD	A,C
+	LD	C,A
+	LD	B,0
+	LD	HL,MESES
+	ADD	HL,BC
+	LD	BC,3
+	LDIR
+	LD	A,' '
+	LD	(DE),A
+	INC	DE
+	LD	A,(SCRAP+46)
+	LD	L,A
+	LD	H,0
+	LD	BC,1980
+	ADD	HL,BC
+	LD	BC,-1000
+	CALL	DIGIT
+	LD	BC,-100
+	CALL	DIGIT
+	LD	BC,-10
+	CALL	DIGIT
+	LD	A,L
+	ADD	A,'0'
+	LD	(DE),A
+	INC	DE
+	LD	A,'.'
+	LD	(DE),A
+	INC	DE
+	LD	A,(SCRAP+42)
+	CALL	PUT2
+	LD	A,':'
+	LD	(DE),A
+	INC	DE
+	LD	A,(SCRAP+41)
+	CALL	PUT2
+	LD	A,':'
+	LD	(DE),A
+	INC	DE
+	LD	A,(SCRAP+40)
+	CALL	PUT2
+	RET
+;
+DIGIT:	LD	A,'0'-1
+DIG1:	INC	A
+	ADD	HL,BC
+	JR	C,DIG1
+	SBC	HL,BC
+	LD	(DE),A
+	INC	DE
+	RET
+;
+PUT2:	LD	B,'0'
+P2A:	CP	10
+	JR	C,P2B
+	SUB	10
+	INC	B
+	JR	P2A
+P2B:	LD	C,A
+	LD	A,B
+	LD	(DE),A
+	INC	DE
+	LD	A,C
+	ADD	A,'0'
+	LD	(DE),A
+	INC	DE
+	RET
+;
+DIAS:	DEFM	'DomLunMar'
+	DEFB	'M',0E9H,'r'
+	DEFM	'JueVie'
+	DEFB	'S',0E1H,'b'
+MESES:	DEFM	'EneFebMarAbrMayJunJulAgoSepOctNovDic'
+;
+; *AYUDA / *HELP
+HELP:	LD	HL,AYUDA
+	JP	PSTR
+;
+AYUDA:	DEFM	'ALTARIS 80 - Comandos del sistema:'
+	DEFB	CR,LF
+	DEFM	' *CAT (*.)      lista el disco'
+	DEFB	CR,LF
+	DEFM	' *BORRAR n      borra un archivo'
+	DEFB	CR,LF
+	DEFM	' *RENOMBRAR v n cambia el nombre'
+	DEFB	CR,LF
+	DEFM	' *COPIAR o d    copia un archivo'
+	DEFB	CR,LF
+	DEFM	' *FOTO n  *MOSTRAR n   graba o muestra la pantalla'
+	DEFB	CR,LF
+	DEFM	' *VER n         muestra un texto'
+	DEFB	CR,LF
+	DEFM	' *LIBRE         espacio libre'
+	DEFB	CR,LF
+	DEFM	' *HORA *FECHA   reloj (con valor: lo pone)'
+	DEFB	CR,LF
+	DEFM	' *KEY n texto   tecla de funcion (0=Menu)'
+	DEFB	CR,LF
+	DEFM	' *TECLAS ON/OFF barra de teclas'
+	DEFB	CR,LF
+	DEFM	' *EXEC *SPOOL   teclado/pantalla a archivo'
+	DEFB	CR,LF
+	DEFM	' *RECIBIR *ENVIAR  archivos con la PC'
+	DEFB	CR,LF
+	DEFM	' *MENU *APAGAR *FORMATEAR *ACTUALIZAR'
+	DEFB	CR,LF,0
+;
+; *FX n - se aceptan y se ignoran salvo 15 (vaciar teclado)
+FX:	CALL	HEX
+	LD	A,E
+	CP	15
+	RET	NZ
+	JP	FLUSHK
+;
+; BYE / QUIT / *APAGAR
+BYE:	LD	HL,MBYE
+	CALL	PSTR
+	LD	B,64
+BYE1:	HALT
+	DJNZ	BYE1
+	JP	POWOFF
+MBYE:	DEFB	CR,LF
+	DEFM	'Hasta luego.'
+	DEFB	CR,LF,0
+;
+; PSTR - imprime texto en HL hasta 0. CRLF2 - nueva linea.
+PSTR:	LD	A,(HL)
+	OR	A
+	RET	Z
+	CALL	OSWRCH
+	INC	HL
+	JR	PSTR
+;
+CRLF2:	LD	A,CR
+	CALL	OSWRCH
+	LD	A,LF
+	JP	OSWRCH
+;
+; PDEC - imprime HL en decimal
+PDEC:	LD	DE,SCRAP+32
+	PUSH	DE
+	LD	BC,-10000
+	CALL	DIGIT
+	LD	BC,-1000
+	CALL	DIGIT
+	LD	BC,-100
+	CALL	DIGIT
+	LD	BC,-10
+	CALL	DIGIT
+	LD	A,L
+	ADD	A,'0'
+	LD	(DE),A
+	INC	DE
+	XOR	A
+	LD	(DE),A
+	POP	HL
+	LD	B,4
+PDC1:	LD	A,(HL)
+	CP	'0'
+	JR	NZ,PSTR
+	INC	HL
+	DJNZ	PDC1
+	JR	PSTR
+;
+; Tabla de comandos (orden alfabetico; el ultimo caracter con bit 7)
+COMDS:	DEFM	'ACTUALIZA'
+	DEFB	'R'+80H
+	DEFW	UPDCMD
+	DEFM	'APAGA'
+	DEFB	'R'+80H
+	DEFW	BYE
+	DEFM	'AYUD'
+	DEFB	'A'+80H
+	DEFW	HELP
+	DEFM	'BORRA'
+	DEFB	'R'+80H
+	DEFW	DELETE
+	DEFM	'BY'
+	DEFB	'E'+80H
+	DEFW	BYE
+	DEFM	'CA'
+	DEFB	'T'+80H
+	DEFW	CAT
+	DEFM	'COPIA'
+	DEFB	'R'+80H
+	DEFW	COPYC
+	DEFM	'DELET'
+	DEFB	'E'+80H
+	DEFW	DELETE
+	DEFM	'DI'
+	DEFB	'R'+80H
+	DEFW	CAT
+	DEFM	'ENVIA'
+	DEFB	'R'+80H
+	DEFW	SEND
+	DEFM	'ES'
+	DEFB	'C'+80H
+	DEFW	ESCCTL
+	DEFM	'EXE'
+	DEFB	'C'+80H
+	DEFW	EXEC
+	DEFM	'FECH'
+	DEFB	'A'+80H
+	DEFW	FECHA
+	DEFM	'FORMATEA'
+	DEFB	'R'+80H
+	DEFW	FORMAT
+	DEFM	'FOT'
+	DEFB	'O'+80H
+	DEFW	FOTO
+	DEFM	'F'
+	DEFB	'X'+80H
+	DEFW	FX
+	DEFM	'HEL'
+	DEFB	'P'+80H
+	DEFW	HELP
+	DEFM	'HOR'
+	DEFB	'A'+80H
+	DEFW	HORA
+	DEFM	'KE'
+	DEFB	'Y'+80H
+	DEFW	KEYCMD
+	DEFM	'LIBR'
+	DEFB	'E'+80H
+	DEFW	FREE
+	DEFM	'LOA'
+	DEFB	'D'+80H
+	DEFW	STLOAD
+	DEFM	'MEN'
+	DEFB	'U'+80H
+	DEFW	MENU
+	DEFM	'MOSTRA'
+	DEFB	'R'+80H
+	DEFW	MOSTRA
+	DEFM	'OP'
+	DEFB	'T'+80H
+	DEFW	OPT
+	DEFM	'QUI'
+	DEFB	'T'+80H
+	DEFW	BYE
+	DEFM	'RECIBI'
+	DEFB	'R'+80H
+	DEFW	RECV
+	DEFM	'RENAM'
+	DEFB	'E'+80H
+	DEFW	RENAME
+	DEFM	'RENOMBRA'
+	DEFB	'R'+80H
+	DEFW	RENAME
+	DEFM	'SAV'
+	DEFB	'E'+80H
+	DEFW	STSAVE
+	DEFM	'SPOO'
+	DEFB	'L'+80H
+	DEFW	SPOOL
+	DEFM	'TECLA'
+	DEFB	'S'+80H
+	DEFW	KBCMD
+	DEFM	'TYP'
+	DEFB	'E'+80H
+	DEFW	TYPE
+	DEFM	'VE'
+	DEFB	'R'+80H
+	DEFW	TYPE
+	DEFB	0FFH
+;
+; ------------------------------------------------------------------
+; OSWORD - A = codigo, HL -> bloque de parametros
+; ------------------------------------------------------------------
+;
+OSWORD:	PUSH	BC
+	PUSH	DE
+	PUSH	HL
+	PUSH	IX
+	PUSH	HL
+	POP	IX
+	CP	1
+	JR	Z,OW1
+	CP	2
+	JR	Z,OW2
+	CP	7
+	JR	Z,OW7
+	CP	14
+	JR	Z,OW14
+	CP	15
+	JR	Z,OW15
+	CP	192
+	JR	Z,OW192
+	CP	9
+	JR	Z,OWV
+	CP	10
+	JR	NZ,OWX
+OWV:	PUSH	AF		;9: leer punto, 10: leer caracter.
+	PUSH	HL		;el bloque se copia a la RAM fija porque el
+	LD	DE,SCRAP+48	;banco de video usa la ranura B
+	LD	BC,16
+	LDIR
+	POP	HL
+	POP	AF
+	PUSH	HL
+	LD	HL,SCRAP+48
+	CALL	BANK
+	DEFB	PGVDU
+	DEFW	V_WORD
+	POP	DE
+	LD	HL,SCRAP+48
+	LD	BC,16
+	LDIR
+OWX:	POP	IX
+	POP	HL
+	POP	DE
+	POP	BC
+	RET
+;
+OW1:	DI			;leer TIME
+	LD	HL,TIMECS
+	PUSH	IX
+	POP	DE
+	LD	BC,4
+	LDIR
+	EI
+	XOR	A
+	LD	(DE),A
+	JR	OWX
+;
+OW2:	DI			;escribir TIME
+	PUSH	IX
+	POP	HL
+	LD	DE,TIMECS
+	LD	BC,4
+	LDIR
+	EI
+	JR	OWX
+;
+OW7:	LD	A,(IX+6)	;SOUND: el LED se enciende durante la nota
+	ADD	A,A
+	ADD	A,A
+	OR	A
+	JR	Z,OWX
+	CALL	LEDFLASH
+	JR	OWX
+;
+OW192:	LD	A,(IX+0)	;leer una entrada del directorio
+	LD	(CMDBUF),A
+	LD	A,(IX+1)
+	LD	(CMDBUF+1),A
+	LD	A,9
+	CALL	BANK
+	DEFB	PGFS
+	DEFW	F_CMD
+	PUSH	IX
+	POP	DE
+	LD	HL,CMDBUF
+	LD	BC,34
+	LDIR
+	JP	OWX
+;
+OW14:	CALL	TIMSTR		;leer el reloj como texto
+	PUSH	IX
+	POP	DE
+	LD	HL,SCRAP
+	LD	BC,25
+	LDIR
+	JR	OWX
+;
+OW15:	LD	A,(IX+0)	;poner el reloj desde texto
+	PUSH	IX
+	POP	HL
+	INC	HL
+	LD	DE,CMDBUF
+	LD	C,A
+	LD	B,0
+	LDIR
+	LD	A,CR
+	LD	(DE),A
+	LD	HL,CMDBUF
+	LD	A,(IX+0)
+	CP	8
+	JR	Z,OW15T
+	CP	15
+	JR	Z,OW15D
+	CP	24
+	JR	NZ,OWX
+	PUSH	HL		;fecha y hora
+	LD	BC,4
+	ADD	HL,BC
+	CALL	FECHAS
+	POP	HL
+	LD	BC,16
+	ADD	HL,BC
+OW15T:	CALL	HORAS
+	JR	OWX
+OW15D:	LD	BC,4
+	ADD	HL,BC
+	CALL	FECHAS
+	JR	OWX
+;
+; FECHAS - pone la fecha desde "dd Mes aaaa"
+FECHAS:	PUSH	HL
+	LD	HL,SCRAP+40
+	CALL	RTCRD
+	POP	HL
+	CALL	NUM2
+	LD	(SCRAP+44),A
+	INC	HL
+	LD	DE,MESES	;buscar el mes
+	LD	B,1
+FCS1:	PUSH	HL
+	PUSH	DE
+	LD	C,3
+FCS2:	LD	A,(DE)
+	XOR	(HL)
+	AND	0DFH
+	JR	NZ,FCS3
+	INC	HL
+	INC	DE
+	DEC	C
+	JR	NZ,FCS2
+FCS3:	POP	DE
+	POP	HL
+	JR	Z,FCS4
+	INC	DE
+	INC	DE
+	INC	DE
+	INC	B
+	LD	A,B
+	CP	13
+	JR	C,FCS1
+	RET
+FCS4:	LD	A,B
+	LD	(SCRAP+45),A
+	INC	HL
+	INC	HL
+	INC	HL
+	CALL	NUM2
+	CALL	NUM2
+	ADD	A,20
+	LD	(SCRAP+46),A
+	CALL	DOW
+	LD	(SCRAP+43),A
+	LD	HL,SCRAP+40
+	JP	RTCWR
+;
+; ------------------------------------------------------------------
+; OSBYTE - A = codigo, L = X, H = Y.  Devuelve L, H.
+; ------------------------------------------------------------------
+;
+OSBYTE:	CP	129
+	JR	Z,OB129
+	CP	134
+	JR	Z,OBVDU
+	CP	135
+	JR	Z,OBVDU
+	CP	126
+	JR	Z,OB126
+	CP	15
+	JR	Z,OB15
+	CP	21
+	JR	Z,OB15
+	CP	128
+	JR	Z,OB128
+	RET
+;
+OBVDU:	PUSH	BC
+	PUSH	DE
+	CALL	BANK
+	DEFB	PGVDU
+	DEFW	V_BYTE
+	POP	DE
+	POP	BC
+	RET
+;
+OB126:	PUSH	HL		;reconocer ESC
+	LD	HL,FLAGS
+	RES	7,(HL)
+	POP	HL
+	RET
+;
+OB15:	CALL	FLUSHK
+	RET
+;
+OB128:	LD	HL,0		;ADVAL: no hay conversores
+	RET
+;
+; INKEY: H<80H espera hasta HL centesimas; negativo: prueba una tecla
+OB129:	BIT	7,H
+	JR	Z,OB129T
+	LD	A,L
+	CPL			;numero de tecla BBC
+	CALL	INKEYN
+	LD	L,A
+	LD	H,A
+	RET
+OB129T:	PUSH	BC
+	PUSH	DE
+	EX	DE,HL		;DE = espera
+	DI
+	LD	HL,(TIMECS)
+	EI
+	ADD	HL,DE
+	EX	DE,HL		;DE = limite (16 bits alcanzan)
+OB1:	CALL	KEYGET
+	JR	C,OB2
+	LD	A,(FLAGS)
+	OR	A
+	JP	M,OB3
+	DI
+	LD	HL,(TIMECS)
+	EI
+	OR	A
+	SBC	HL,DE
+	BIT	7,H
+	JR	Z,OB4		;se termino el tiempo
+	HALT
+	JR	OB1
+OB3:	LD	A,KESC
+OB2:	LD	L,A
+	LD	H,0
+	POP	DE
+	POP	BC
+	RET
+OB4:	LD	HL,0FFFFH
+	POP	DE
+	POP	BC
+	RET
+;
+;
+; Mensajes de error del BASIC en castellano
+	INCLUDE	errores.inc
+;
+	END

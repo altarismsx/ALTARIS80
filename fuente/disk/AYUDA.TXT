@@ -1,0 +1,216 @@
+@Primeros pasos
+ALTARIS 80 convierte la MailStation en una computadora de los
+años ochenta: al encenderla muestra el logo, cuenta la memoria
+y deja listo el BASIC. La tecla Menú abre las aplicaciones.
+
+En el menú:
+  Flechas    elegir un juego o una utilidad
+  Enter      ejecutarlo
+  Volver     salir al BASIC
+
+En el BASIC aparece el signo > y se escriben órdenes:
+  PRINT 2+2          muestra 4
+  CHAIN "MENU"       vuelve al menú (o la tecla Menú)
+  *APAGAR            apaga la máquina
+
+Los programas que escribas se graban en el disco interno con
+SAVE "NOMBRE" y se cargan con LOAD "NOMBRE" o CHAIN "NOMBRE".
+El disco guarda los archivos aunque se apague la máquina.
+
+Hay dos discos:
+  - el tuyo, donde se graba todo lo que hacés;
+  - el de aplicaciones, de solo lectura, con los juegos y las
+    utilidades. Si querés cambiar uno, copialo a tu disco con
+    *COPIAR o con la utilidad Archivos.
+
+Para pasar archivos a la PC y desde la PC se usan *ENVIAR y
+*RECIBIR con el cable de la impresora (ver el tema "La PC").
+@El teclado
+Volver         interrumpe el programa (en el menú: ir al BASIC)
+Menú           vuelve al menú de aplicaciones
+F1 a F5        LIST, RUN, LOAD", SAVE" y *CAT
+Borrar         borra la letra de la izquierda
+Imprimir       borra la letra del cursor
+Bloq Mayús     mayúsculas fijas (prende al encender)
+Shift          mayúsculas y signos
+
+Con la tecla Fn:
+  Fn + a e i o u    á é í ó ú   (con Shift: Á É Í Ó Ú)
+  Fn + n            ñ           (con Shift: Ñ)
+  Fn + /            ¿
+  Fn + 1            ¡
+  Fn + flechas      inicio, fin, página arriba, página abajo
+
+Al escribir una línea:
+  Flecha arriba     trae de vuelta la última línea escrita
+  Flecha abajo      borra toda la línea
+  Izquierda/derecha mueven el cursor para corregir
+
+Las teclas de función se cambian con *KEY:
+  *KEY 1 PRINT TIME$|M     (|M es Enter)
+La barra de teclas de abajo se apaga con *TECLAS OFF.
+@El BASIC: comandos
+El BASIC usa números de línea, como el del MSX:
+  10 PRINT "HOLA"
+  20 GOTO 10
+
+LIST            muestra el programa (LIST 100,200 una parte)
+RUN             lo ejecuta
+NEW             borra el programa de la memoria
+OLD             recupera el programa después de un NEW
+AUTO            pone los números de línea solo (Volver termina)
+AUTO 100,5      empieza en 100 y va de 5 en 5
+RENUMBER        renumera de 10 en 10 (corrige los GOTO)
+DELETE 10,50    borra las líneas 10 a 50
+EDIT 20         trae la línea 20 para corregirla
+SAVE "JUEGO"    graba el programa en tu disco
+LOAD "JUEGO"    lo carga
+CHAIN "JUEGO"   lo carga y lo ejecuta
+
+Con LISTO 7 el listado sale con sangría en los ciclos.
+TRACE ON muestra los números de línea al ejecutar
+(TRACE OFF lo apaga).
+
+Memoria libre para tus programas: unos 29.900 bytes.
+PRINT HIMEM-TOP muestra cuánto queda.
+@El BASIC: instrucciones
+Variables: A=1.5  N%=10 (entera)  T$="texto"
+Matrices: DIM A(10), N%(5,5), T$(20)
+
+PRINT "A";B;TAB(10);C      INPUT "Nombre";N$
+IF A>1 THEN ... ELSE ...
+IF A>1 THEN            (en varias líneas)
+  ...
+ELSE
+  ...
+ENDIF
+FOR I%=1 TO 10 STEP 2 ... NEXT
+REPEAT ... UNTIL condición
+WHILE condición ... ENDWHILE
+CASE N% OF
+  WHEN 1: PRINT "uno"
+  WHEN 2,3: PRINT "dos o tres"
+  OTHERWISE PRINT "otro"
+ENDCASE
+GOTO 100   GOSUB 500 ... RETURN
+DATA 1,2,"tres"   READ A,B,C$   RESTORE
+
+Procedimientos y funciones con nombre:
+  PROCsaludo("Ana")
+  DEF PROCsaludo(N$)
+  LOCAL I%
+  PRINT "Hola ";N$
+  ENDPROC
+
+  PRINT FNdoble(4)
+  DEF FNdoble(X)=X*2
+
+Errores: ON ERROR PRINT REPORT$:END
+ERR da el número y ERL la línea del último error.
+Ojo: un FOR siempre se ejecuta al menos una vez.
+@El BASIC: funciones
+Números: ABS INT SQR SIN COS TAN ASN ACS ATN
+         LN LOG EXP PI RAD DEG SGN RND MOD DIV ^
+RND(6) da un entero de 1 a 6; RND(1) un decimal de 0 a 1.
+Textos:  LEN LEFT$ RIGHT$ MID$ INSTR STR$ VAL
+         CHR$ ASC STRING$
+Teclado: GET (espera una tecla y da el código)
+         GET$ (lo mismo pero da la letra)
+         INKEY(100) espera hasta 1 segundo
+         INKEY(-n) dice si la tecla n está apretada:
+           -26 izq  -122 der  -58 arriba  -42 abajo
+           -99 espacio  -1 Shift
+Códigos de GET: flechas 136 izq, 137 der, 138 abajo,
+         139 arriba; Enter 13; Volver 27 (con *ESC OFF);
+         F1 a F5 129 a 133; Menú 128.
+Tiempo:  TIME (centésimas de segundo desde el encendido)
+         TIME$ fecha y hora; WAIT 100 espera 1 segundo
+Otras:   EVAL("2+2")  TRUE  FALSE  NOT AND OR EOR
+@Pantalla y gráficos
+MODE 0     64 columnas x 16 filas (letras de 5 puntos)
+MODE 1     40 columnas x 16 filas (letras de 8 puntos)
+Gráficos:  320 x 128 puntos; el 0,0 es la esquina de abajo
+           a la izquierda y la Y crece hacia arriba.
+
+CLS borra la pantalla, CLG solo los gráficos.
+PRINT TAB(x,y);"texto"     ubica el texto
+COLOUR 129:COLOUR 0        texto en negativo
+COLOUR 128:COLOUR 1        texto normal
+MOVE x,y   DRAW x,y        líneas
+PLOT 69,x,y                un punto
+CIRCLE x,y,r     CIRCLE FILL x,y,r
+RECTANGLE x,y,ancho,alto   RECTANGLE FILL ...
+GCOL 0,1 dibuja, GCOL 0,0 borra, GCOL 3,1 invierte (XOR)
+POINT(x,y) dice si el punto está encendido.
+
+VDU 23,1,0;0;0;0;   apaga el cursor (con 1 lo prende)
+VDU 23,n,a,b,c,d,e,f,g,h   dibuja tu propia letra n
+                    (8 filas de 8 puntos; usá de 162 a 170)
+VDU 5     escribe el texto donde está el cursor gráfico
+VDU 4     vuelve a escribir en las filas de texto
+VDU 28,i,ab,d,ar    ventana de texto   VDU 26 la saca
+VDU 24,i;ab;d;ar;   ventana de gráficos
+Letras gráficas de 128 a 159: bloques, líneas, pelota,
+corazón, robot, nave, pájaro, auto, ladrillo, estrella...
+Probalas: FOR I=128 TO 159:PRINT CHR$I;:NEXT
+*FOTO NOMBRE graba la pantalla; *MOSTRAR NOMBRE la muestra.
+SOUND hace destellar la luz de la máquina.
+@Archivos y disco
+SAVE, LOAD y CHAIN graban y cargan programas.
+Para datos:
+  F%=OPENOUT "DATOS.TXT"     crea un archivo
+  PRINT#F%,A,B$              escribe números y textos
+  BPUT#F%,"una línea"        escribe una línea de texto
+  BPUT#F%,65                 escribe un byte
+  CLOSE#F%
+  F%=OPENIN "DATOS.TXT"      abre para leer (0 si no está)
+  INPUT#F%,A,B$   L$=GET$#F%   B%=BGET#F%
+  EOF#F%   PTR#F%   EXT#F%
+  F%=OPENUP "DATOS.TXT"      abre para leer y escribir
+  CLOSE#0 cierra todos.
+
+Comandos del disco (también con OSCLI "..."):
+  *CAT              lista los dos discos
+  *BORRAR NOMBRE    borra un archivo
+  *RENOMBRAR V N    cambia el nombre
+  *COPIAR O D       copia un archivo
+  *VER NOMBRE       muestra un archivo de texto
+  *LIBRE            espacio libre
+  *FORMATEAR        borra todo tu disco (pregunta antes)
+  *SPOOL NOMBRE     copia la pantalla a un archivo
+                    (*SPOOL solo lo termina)
+  *EXEC NOMBRE      toma el teclado de un archivo
+Los nombres tienen hasta 16 letras.
+@Comandos del sistema
+*AYUDA            lista de comandos
+*CAT              disco
+*HORA             muestra la hora; *HORA 18:30:00 la pone
+*FECHA            muestra la fecha; *FECHA 25/12/2026 la pone
+                  (también TIME$="18:30:00")
+*KEY n texto      cambia la tecla de función n (0 = Menú)
+*TECLAS ON/OFF    barra de teclas de abajo
+*ESC OFF          Volver deja de interrumpir (GET da 27)
+*ESC ON           Volver vuelve a interrumpir
+*MENU             vuelve al menú
+*APAGAR           apaga la máquina
+*FOTO, *MOSTRAR   graba y muestra la pantalla
+*ENVIAR, *RECIBIR pasan archivos con la PC
+*ACTUALIZAR       modo para cambiar el sistema desde la PC
+@La PC
+Por el conector de la impresora (atrás) y una placa Arduino
+Uno se pasan archivos entre la MailStation y la PC.
+
+De la PC a la MailStation:
+  en la PC:  arrastrar JUEGO.bas encima de ENVIAR.BAT
+  acá:       *RECIBIR JUEGO
+De la MailStation a la PC:
+  en la PC:  RECIBIR.BAT y escribir JUEGO
+  acá:       *ENVIAR JUEGO
+Volver cancela la transferencia.
+
+El programa de la PC pasa los programas de BASIC de texto a
+la forma que entiende la MailStation y al revés. En la PC se
+pueden escribir con o sin números de línea.
+
+La utilidad Archivos también envía archivos con la tecla F5.
+Los detalles de conexión están en el manual del kit.

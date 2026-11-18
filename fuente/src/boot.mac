@@ -1,0 +1,356 @@
+	TITLE	ALTARIS 80 - PANTALLA DE ARRANQUE (BANCO 7)
+;
+; Logo, prueba de memoria al estilo de las PC XT e informacion del equipo.
+; Se ejecuta una vez al encender, antes de iniciar el BASIC.
+;
+; (C) 2026 Altaris Software.
+;
+	.Z80
+	INCLUDE	defs.inc
+	INCLUDE	p0sym.inc	;rutinas de la pagina 0 (generado al armar)
+;
+NBANK	EQU	01C0H
+NLCD	EQU	01C3H
+NMAPB	EQU	01C6H
+NKGET	EQU	01CCH
+NFLUSH	EQU	01D2H
+NLED	EQU	01D5H
+;
+CR	EQU	0DH
+LF	EQU	0AH
+FSRES	EQU	DSKVAR+9
+;
+BKB	EQU	FSWORK		;variables de trabajo (el disco no esta en uso)
+BKCNT	EQU	FSWORK+2	;KB contados
+BKERR	EQU	FSWORK+4	;direccion del primer error (0 = ninguno)
+BKERP	EQU	FSWORK+6	;pagina del error
+BKPG	EQU	FSWORK+7
+;
+	ASEG
+	ORG	4000H
+	JP	BSTART
+;
+BSTART:	LD	A,12		;pantalla limpia
+	CALL	OSWRCH
+	CALL	DRLOGO
+; Texto a la derecha del logo
+	LD	HL,MHDR
+	CALL	VSTR
+; Linea divisoria (VDU 25: mover y dibujar)
+	LD	HL,MLINE
+	LD	B,MLINEL
+BS1:	LD	A,(HL)
+	CALL	OSWRCH
+	INC	HL
+	DJNZ	BS1
+; Procesador
+	LD	HL,MCPU
+	CALL	PSTR
+; Memoria
+	LD	HL,MRAM
+	CALL	PSTR
+	CALL	MEMTST
+; Pantalla
+	LD	HL,MLCD
+	CALL	PSTR
+; Flash de programa y disco de aplicaciones
+	LD	HL,MCF
+	CALL	PSTR
+	CALL	ROMCNT
+	CALL	PDEC
+	LD	HL,MCF2
+	CALL	PSTR
+; Disco virtual
+	LD	HL,MDF
+	CALL	PSTR
+	CALL	NBANK
+	DEFB	PGFS
+	DEFW	F_FREE
+	SRL	H		;sectores / 4 = KB
+	RR	L
+	SRL	H
+	RR	L
+	CALL	PDEC
+	LD	HL,MDF2
+	CALL	PSTR
+	LD	A,(FSRES)
+	OR	A
+	JR	Z,BS2
+	LD	HL,MDF3
+	CALL	PSTR
+BS2:	CALL	CRLF2
+; Reloj
+	LD	HL,MRTC
+	CALL	PSTR
+	CALL	TIMSTR
+	LD	HL,SCRAP	;"Dia,dd Mes aaaa.hh:mm:ss"
+	LD	B,3
+	CALL	PRN
+	LD	A,' '
+	CALL	OSWRCH
+	LD	HL,SCRAP+4
+	LD	B,11
+	CALL	PRN
+	LD	A,' '
+	CALL	OSWRCH
+	LD	HL,SCRAP+16
+	LD	B,5
+	CALL	PRN
+	CALL	CRLF2
+; Teclado
+	LD	HL,MKBD
+	CALL	PSTR
+	LD	HL,KMAT
+	LD	B,10
+	XOR	A
+BS3:	OR	(HL)
+	INC	HL
+	DJNZ	BS3
+	LD	HL,MOK
+	JR	Z,BS4
+	LD	HL,MKBD2
+BS4:	CALL	PSTR
+; Fin de la prueba: destello del LED (el "bip" de las XT)
+	LD	A,12
+	CALL	NLED
+; Pausa: 2 segundos o una tecla
+	LD	B,128
+BS5:	CALL	NKGET
+	JR	C,BS6
+	HALT
+	DJNZ	BS5
+BS6:	CALL	NFLUSH
+; Limpiar la zona de texto y dejar el logo arriba
+	LD	HL,MCLR
+	LD	B,MCLRL
+BS7:	LD	A,(HL)
+	CALL	OSWRCH
+	INC	HL
+	DJNZ	BS7
+	LD	HL,BHIMEM-BPAGE
+	CALL	PDEC
+	LD	HL,MFREE
+	JP	PSTR
+;
+; VSTR - imprime desde HL hasta un byte 0FFH (admite codigos VDU con 0)
+VSTR:	LD	A,(HL)
+	CP	0FFH
+	RET	Z
+	CALL	OSWRCH
+	INC	HL
+	JR	VSTR
+;
+; PRN - imprime B caracteres desde HL
+PRN:	LD	A,(HL)
+	CALL	OSWRCH
+	INC	HL
+	DJNZ	PRN
+	RET
+;
+; ------------------------------------------------------------------
+; DRLOGO - copia el logo a la pantalla virtual y al LCD
+; ------------------------------------------------------------------
+;
+DRLOGO:	LD	A,RPVDU
+	LD	E,DEVRAM
+	CALL	NMAPB
+	LD	HL,LOGO
+	LD	C,0		;columna
+LG1:	LD	A,C		;destino = 8000H + columna*128
+	RRCA
+	AND	7FH
+	ADD	A,80H
+	LD	D,A
+	LD	A,C
+	RRCA
+	AND	80H
+	LD	E,A
+	PUSH	BC
+	LD	BC,LOGOH
+	LDIR
+	POP	BC
+	INC	C
+	LD	A,C
+	CP	LOGOC
+	JR	C,LG1
+	LD	B,0
+	LD	C,LOGOC
+	LD	D,0
+	LD	E,LOGOH
+	JP	NLCD
+;
+; ------------------------------------------------------------------
+; MEMTST - prueba y cuenta la RAM, 1 KB por vez, sin borrarla
+; ------------------------------------------------------------------
+;
+MEMTST:	LD	HL,0
+	LD	(BKCNT),HL
+	LD	(BKERR),HL
+	CALL	OSBYTP		;posicion del cursor (para reescribir)
+	XOR	A
+	LD	(BKPG),A
+MT1:	LD	A,(BKPG)	;mapear la pagina en la ranura B
+	LD	E,DEVRAM
+	CALL	NMAPB
+	LD	HL,8000H
+MT2:	PUSH	HL
+	DI
+	LD	BC,1024
+MT3:	LD	A,(HL)		;complementar, verificar y restaurar
+	LD	D,A
+	CPL
+	LD	(HL),A
+	CP	(HL)
+	JR	NZ,MTBAD
+	LD	(HL),D
+	INC	HL
+	DEC	BC
+	LD	A,B
+	OR	C
+	JR	NZ,MT3
+	JR	MT4
+MTBAD:	LD	(HL),D
+	LD	(BKERR),HL
+	LD	A,(BKPG)
+	LD	(BKERP),A
+MT4:	EI
+	LD	HL,(BKCNT)
+	INC	HL
+	LD	(BKCNT),HL
+	CALL	SHOWKB
+	POP	HL
+	LD	DE,1024
+	ADD	HL,DE
+	LD	A,H
+	CP	0C0H
+	JR	C,MT2
+	LD	HL,BKPG
+	INC	(HL)
+	LD	A,(HL)
+	CP	8
+	JR	C,MT1
+	LD	HL,(BKERR)
+	LD	A,H
+	OR	L
+	JR	NZ,MT9
+	LD	HL,MKBOK
+	JP	PSTR
+MT9:	LD	HL,MKBERR
+	JP	PSTR
+;
+; SHOWKB - escribe la cuenta de KB en la posicion guardada
+SHOWKB:	LD	A,31		;VDU 31,x,y
+	CALL	OSWRCH
+	LD	A,(BKB)
+	CALL	OSWRCH
+	LD	A,(BKB+1)
+	CALL	OSWRCH
+	LD	HL,(BKCNT)
+	LD	A,H
+	OR	A
+	JR	NZ,SKB2
+	LD	A,L
+	CP	100
+	JR	NC,SKB2
+	LD	A,' '
+	CALL	OSWRCH
+	LD	A,L
+	CP	10
+	JR	NC,SKB2
+	LD	A,' '
+	CALL	OSWRCH
+SKB2:	CALL	PDEC
+	LD	HL,MKB
+	JP	PSTR
+;
+; OSBYTP - guarda la posicion del cursor en BKB (x, y)
+OSBYTP:	LD	A,134
+	CALL	NBANK
+	DEFB	PGVDU
+	DEFW	V_BYTE
+	LD	A,L
+	LD	(BKB),A
+	LD	A,H
+	LD	(BKB+1),A
+	RET
+;
+; ROMCNT - HL = cantidad de archivos del disco de aplicaciones
+ROMCNT:	LD	A,PGROMD
+	LD	E,DEVCF
+	CALL	NMAPB
+	LD	HL,8000H
+	LD	DE,RMAG
+	LD	B,6
+RC1:	LD	A,(DE)
+	CP	(HL)
+	JR	NZ,RC9
+	INC	HL
+	INC	DE
+	DJNZ	RC1
+	LD	HL,(8008H)
+	RET
+RC9:	LD	HL,0
+	RET
+RMAG:	DEFM	'ALTROM'
+;
+; ------------------------------------------------------------------
+; Textos
+; ------------------------------------------------------------------
+;
+MHDR:	DEFB	31,39,0
+	DEFM	'Computadora personal'
+	DEFB	31,39,1
+	DEFM	'port'
+	DEFB	0E1H
+	DEFM	'til'
+	DEFB	31,39,2
+	DEFM	'BIOS 1.0'
+	DEFB	31,39,3
+	DEFM	'(C) 2026 Altaris Software'
+	DEFB	31,0,5,0FFH
+MLINE:	DEFB	25,4,0,0,90,0	;MOVE 0,90
+	DEFB	25,5,63,1,90,0	;DRAW 319,90
+MLINEL	EQU	$-MLINE
+MCPU:	DEFM	'Procesador:       Z80 a 12 MHz'
+	DEFB	CR,LF,0
+MRAM:	DEFM	'Memoria RAM:      '
+	DEFB	0
+MKB:	DEFM	' KB'
+	DEFB	0
+MKBOK:	DEFM	' OK'
+	DEFB	CR,LF,0
+MKBERR:	DEFM	' ERROR'
+	DEFB	CR,LF,0
+MLCD:	DEFM	'Pantalla:         LCD de 320 x 128 puntos'
+	DEFB	CR,LF,0
+MCF:	DEFM	'Memoria flash:    1024 KB, '
+	DEFB	0
+MCF2:	DEFM	' aplicaciones'
+	DEFB	CR,LF,0
+MDF:	DEFM	'Disco virtual:    512 KB, '
+	DEFB	0
+MDF2:	DEFM	' KB libres'
+	DEFB	0
+MDF3:	DEFM	' (reci'
+	DEFB	0E9H
+	DEFM	'n formateado)'
+	DEFB	0
+MRTC:	DEFM	'Reloj:            '
+	DEFB	0
+MKBD:	DEFM	'Teclado:         '
+	DEFB	0
+MOK:	DEFM	' OK'
+	DEFB	CR,LF,0
+MKBD2:	DEFM	' tecla apretada'
+	DEFB	CR,LF,0
+MCLR:	DEFB	28,0,15,63,5	;ventana debajo del logo
+	DEFB	12		;borrarla
+	DEFB	26		;ventanas normales
+	DEFB	31,0,5		;cursor debajo del logo
+MCLRL	EQU	$-MCLR
+MFREE:	DEFM	' bytes libres.  Tecla MENU: aplicaciones.'
+	DEFB	CR,LF,0
+;
+	INCLUDE	logo.inc
+;
+	END

@@ -1,0 +1,640 @@
+	TITLE	ALTARIS 80 - INSTALADOR (CORRE EN LA RAM DESDE 8000H)
+;
+; Lo carga el Loader del firmware original (o *ACTUALIZAR de ALTARIS) en la
+; RAM pagina 1, ranura B (8000H), y salta al comienzo. Desde ahi obedece a
+; la PC (altaris_pc.py) por el puerto paralelo, con el protocolo de 3 bits:
+;
+;   'P'                 responde 'K' (sigue vivo)
+;   'I'                 responde 'A','L','T', fabricante, dispositivo, version
+;                       (identificacion de la flash de programa)
+;   'D' p               manda la pagina p de la flash (16384 bytes) y la suma
+;   'E' s               borra el sector s (64 KB = paginas 4s..4s+3); 'K'/'F'
+;   'W' p datos suma    graba la pagina p: 'K' bien, 'N' llego mal (repetir),
+;                       'F' la flash no quedo bien
+;   'X'                 reinicia la maquina (arranca lo que haya en la flash)
+;   'd' p               como 'D', pero de la flash de datos (p = 0-31)
+;   'w' p datos suma    graba la pagina p de la flash de datos (28SF040):
+;                       solo borra y graba los sectores de 256 bytes que
+;                       cambian; 'K', 'N' o 'F' como 'W'
+;
+; No usa nada de la flash mientras trabaja: todo esta en la RAM. Las
+; interrupciones quedan apagadas. La pagina recibida se guarda en C000H.
+; Los comandos de la flash (Am29F080) son los mismos que usa el firmware
+; original: AA en 555H, 55 en 2AAH, y despues A0 (grabar) o 80,AA,55,30
+; (borrar sector).
+;
+	.Z80
+	ASEG
+	ORG	8000H
+;
+PMISC2	EQU	02H
+PIRQ	EQU	03H
+PSLAPG	EQU	05H
+PSLADV	EQU	06H
+PLPTST	EQU	21H
+PLPTDIR	EQU	2CH
+PLPTDAT	EQU	2DH
+DEVCF	EQU	0
+DEVDF	EQU	3
+DEVLCDL	EQU	2
+DEVLCDR	EQU	4
+P2INIT	EQU	87H
+BUF	EQU	0C000H
+VERSION	EQU	2		;2: tambien flash de datos
+;
+INICIO:	DI
+	LD	SP,0C000H	;la pila queda al final de la pagina 1
+	LD	A,0FFH
+	OUT	(PLPTDIR),A
+	LD	A,P2INIT
+	OUT	(PMISC2),A
+	XOR	A
+	OUT	(PIRQ),A
+	CALL	CLS
+	LD	DE,0108H
+	LD	HL,MTIT
+	CALL	PRAT
+	LD	DE,0307H
+	LD	HL,MAV1
+	CALL	PRAT
+	LD	DE,040DH
+	LD	HL,MAV2
+	CALL	PRAT
+	LD	DE,0C07H
+	LD	HL,MRES
+	CALL	PRAT
+	LD	HL,MESP
+	CALL	ESTADO
+;
+; ---------------- bucle de comandos ----------------
+;
+CMD:	XOR	A		;listos para recibir
+	OUT	(PLPTDAT),A
+	CALL	RXB
+	CP	'P'
+	JR	Z,PING
+	CP	'I'
+	JR	Z,IDENT
+	CP	'D'
+	JP	Z,VOLCAR
+	CP	'E'
+	JP	Z,BORRAR
+	CP	'W'
+	JP	Z,GRABAR
+	CP	'X'
+	JP	Z,REINIC
+	CP	'd'
+	JP	Z,VOLDF
+	CP	'w'
+	JP	Z,GRABDF
+	JR	CMD
+;
+PING:	LD	A,'K'
+RESP:	CALL	TXB
+	JR	CMD
+;
+; I - identificacion de la flash de programa
+IDENT:	CALL	MAPCF0
+	LD	A,0AAH
+	LD	(4555H),A
+	LD	A,55H
+	LD	(42AAH),A
+	LD	A,90H
+	LD	(4555H),A
+	LD	A,(4000H)
+	LD	E,A		;fabricante
+	LD	A,(4001H)
+	LD	D,A		;dispositivo
+	LD	A,0F0H		;volver a lectura
+	LD	(4000H),A
+	PUSH	DE
+	LD	A,'A'
+	CALL	TXB
+	LD	A,'L'
+	CALL	TXB
+	LD	A,'T'
+	CALL	TXB
+	POP	DE
+	PUSH	DE
+	LD	A,E
+	CALL	TXB
+	POP	DE
+	LD	A,D
+	CALL	TXB
+	LD	A,VERSION
+	JR	RESP
+;
+; D p - manda una pagina de la flash
+VOLCAR:	LD	A,DEVCF
+	LD	HL,MVOL
+	JR	VOLC
+VOLDF:	LD	A,DEVDF
+	LD	HL,MVOLD
+VOLC:	LD	(DEV),A
+	PUSH	HL
+	CALL	RXB
+	LD	(PAG),A
+	POP	HL
+	CALL	ESTPAG
+	CALL	MAPDEV
+	LD	HL,0
+	LD	(SUMA),HL
+	LD	HL,4000H
+VOL1:	LD	A,(HL)
+	PUSH	HL
+	CALL	SUMAR
+	CALL	TXB
+	POP	HL
+	INC	HL
+	LD	A,H
+	CP	80H
+	JR	NZ,VOL1
+	CALL	TXSUMA
+	JR	CMD
+;
+; E s - borra un sector de 64 KB
+BORRAR:	CALL	RXB
+	ADD	A,A
+	ADD	A,A
+	LD	(PAG),A
+	LD	A,(AVISO)	;desde ahora no se puede apretar RESET
+	OR	A
+	JR	NZ,BOR0
+	INC	A
+	LD	(AVISO),A
+	LD	DE,0C05H
+	LD	HL,MNORES
+	CALL	PRAT
+BOR0:	LD	HL,MBOR
+	CALL	ESTPAG
+	CALL	MAPCF
+	LD	A,0AAH
+	LD	(4555H),A
+	LD	A,55H
+	LD	(42AAH),A
+	LD	A,80H
+	LD	(4555H),A
+	LD	A,0AAH
+	LD	(4555H),A
+	LD	A,55H
+	LD	(42AAH),A
+	LD	A,30H
+	LD	(4000H),A
+	CALL	ESPFL		;esperar a que termine
+	LD	A,(PAG)		;comprobar que las 4 paginas quedaron en FF
+	LD	B,A
+	LD	C,4
+BOR1:	LD	A,B
+	OUT	(PSLAPG),A
+	LD	HL,4000H
+BOR2:	LD	A,(HL)
+	INC	A
+	JR	NZ,MAL
+	INC	HL
+	LD	A,H
+	CP	80H
+	JR	NZ,BOR2
+	INC	B
+	DEC	C
+	JR	NZ,BOR1
+BIEN:	LD	A,'K'
+	JP	RESP
+MAL:	LD	A,'F'
+	JP	RESP
+;
+; W p datos suma - graba una pagina
+GRABAR:	CALL	RECPAG
+	LD	A,'N'
+	JP	NZ,RESP		;llego mal: la PC la manda de nuevo
+	LD	HL,MGRA
+	CALL	ESTPAG
+	CALL	MAPCF
+	LD	HL,BUF
+	LD	DE,4000H
+GRA2:	LD	A,(HL)
+	INC	A
+	JR	Z,GRA3		;FF: ya esta borrado
+	LD	A,0AAH
+	LD	(4555H),A
+	LD	A,55H
+	LD	(42AAH),A
+	LD	A,0A0H
+	LD	(4555H),A
+	LD	A,(HL)
+	LD	(DE),A
+	PUSH	DE
+	EX	DE,HL
+	CALL	ESPFL1
+	EX	DE,HL
+	POP	DE
+GRA3:	INC	HL
+	INC	DE
+	LD	A,H
+	OR	L
+	JR	NZ,GRA2
+COMPAG:	LD	HL,BUF		;comparar toda la pagina
+	LD	DE,4000H
+GRA4:	LD	A,(DE)
+	CP	(HL)
+	JR	NZ,MAL
+	INC	HL
+	INC	DE
+	LD	A,H
+	OR	L
+	JR	NZ,GRA4
+	JR	BIEN
+;
+; RECPAG - recibe p, 16384 bytes y la suma en BUF. Z si llego bien.
+RECPAG:	CALL	RXB
+	LD	(PAG),A
+	LD	HL,MREC
+	CALL	ESTPAG
+	LD	HL,0
+	LD	(SUMA),HL
+	LD	HL,BUF
+REC1:	PUSH	HL
+	CALL	RXB
+	POP	HL
+	LD	(HL),A
+	CALL	SUMAR
+	INC	HL
+	LD	A,H
+	OR	L
+	JR	NZ,REC1		;hasta FFFF
+	CALL	RXB		;suma de control
+	LD	E,A
+	CALL	RXB
+	LD	D,A
+	LD	HL,(SUMA)
+	OR	A
+	SBC	HL,DE
+	RET
+;
+; w p datos suma - graba una pagina de la flash de datos
+GRABDF:	CALL	RECPAG
+	LD	A,'N'
+	JP	NZ,RESP
+	LD	A,(AVISO)	;desde ahora no se puede apretar RESET
+	OR	A
+	JR	NZ,GDF0
+	INC	A
+	LD	(AVISO),A
+	LD	DE,0C05H
+	LD	HL,MNORES
+	CALL	PRAT
+GDF0:	LD	HL,MGRAD
+	CALL	ESTPAG
+	LD	A,DEVDF
+	LD	(DEV),A
+	CALL	MAPDEV
+	LD	HL,BUF
+	LD	DE,4000H
+GDF1:	PUSH	HL		;sector igual: no se toca
+	PUSH	DE
+	LD	B,0
+GDF2:	LD	A,(DE)
+	CP	(HL)
+	JR	NZ,GDF3
+	INC	HL
+	INC	DE
+	DJNZ	GDF2
+	POP	DE
+	POP	HL
+	JR	GDF6
+GDF3:	POP	DE
+	POP	HL
+	CALL	DFUNL
+	EX	DE,HL		;HL = sector en la flash, DE = BUF
+	LD	(HL),20H	;borrar el sector
+	LD	(HL),0D0H
+	CALL	POLL
+	LD	B,0
+GDF4:	LD	A,(DE)
+	INC	A
+	JR	Z,GDF5		;FF: queda como esta despues de borrar
+	DEC	A
+	LD	(HL),10H	;grabar un byte
+	LD	(HL),A
+	CALL	POLL
+GDF5:	INC	L
+	INC	E
+	DJNZ	GDF4
+	CALL	DFLCK
+	EX	DE,HL
+GDF6:	INC	H		;proximo sector
+	INC	D
+	LD	A,H
+	OR	A
+	JR	NZ,GDF1
+	JP	COMPAG
+;
+; X - reiniciar
+REINIC:	LD	A,'K'
+	CALL	TXB
+	LD	HL,MFIN
+	CALL	ESTADO
+	LD	B,0		;un momento para leer el mensaje
+REI1:	PUSH	BC
+	LD	B,0
+REI2:	DJNZ	REI2
+	POP	BC
+	DJNZ	REI1
+	JP	0000H
+;
+; ---------------- flash ----------------
+;
+MAPCF0:	XOR	A
+	LD	(PAG),A
+MAPCF:	LD	A,DEVCF
+	LD	(DEV),A
+MAPDEV:	LD	A,(DEV)
+	OUT	(PSLADV),A
+	LD	A,(PAG)
+	OUT	(PSLAPG),A
+	RET
+;
+; POLL - espera el fin de una operacion de la 28SF040 en (HL)
+POLL:	PUSH	BC
+	LD	BC,0
+POL1:	LD	A,(HL)
+	CP	(HL)
+	JR	Z,POL2
+	DEC	BC
+	LD	A,B
+	OR	C
+	JR	NZ,POL1
+POL2:	POP	BC
+	RET
+;
+; Proteccion por software de la 28SF040: se desbloquea y se bloquea
+; leyendo una secuencia de direcciones (solo cuentan los 13 bits bajos)
+DFUNL:	LD	A,(5823H)
+	LD	A,(5820H)
+	LD	A,(5822H)
+	LD	A,(4418H)
+	LD	A,(441BH)
+	LD	A,(4419H)
+	LD	A,(441AH)
+	RET
+DFLCK:	LD	A,(5823H)
+	LD	A,(5820H)
+	LD	A,(5822H)
+	LD	A,(4418H)
+	LD	A,(441BH)
+	LD	A,(4419H)
+	LD	A,(440AH)
+	RET
+;
+; ESPFL - espera el fin de una operacion leyendo 4000H hasta que dos
+; lecturas seguidas den lo mismo (el bit 6 deja de cambiar)
+ESPFL:	LD	HL,4000H
+ESPFL1:	LD	A,(HL)
+	LD	B,A
+	LD	A,(HL)
+	CP	B
+	JR	NZ,ESPFL1
+	RET
+;
+; ---------------- suma de control ----------------
+;
+SUMAR:	PUSH	HL		;agrega A a SUMA (A queda igual)
+	PUSH	AF
+	LD	HL,(SUMA)
+	ADD	A,L
+	LD	L,A
+	JR	NC,SUM1
+	INC	H
+SUM1:	LD	(SUMA),HL
+	POP	AF
+	POP	HL
+	RET
+;
+TXSUMA:	LD	A,(SUMA)
+	CALL	TXB
+	LD	A,(SUMA+1)
+	JP	TXB
+;
+; ---------------- puerto paralelo (3 bits por vez) ----------------
+;
+; RXT - recibe 3 bits en A (espera lo que haga falta)
+RXT:	IN	A,(PLPTST)
+	BIT	7,A		;strobe de la PC
+	JR	Z,RXT
+	RRCA
+	RRCA
+	RRCA
+	AND	07H
+	LD	C,A
+	LD	A,08H		;confirmar
+	OUT	(PLPTDAT),A
+RXT1:	IN	A,(PLPTST)
+	BIT	7,A
+	JR	NZ,RXT1
+	XOR	A		;listos para el proximo
+	OUT	(PLPTDAT),A
+	LD	A,C
+	RET
+;
+; RXB - recibe un byte en A (destruye B, C)
+RXB:	CALL	RXT
+	LD	B,A
+	CALL	RXT
+	RLCA
+	RLCA
+	RLCA
+	OR	B
+	LD	B,A
+	CALL	RXT
+	RRCA
+	RRCA
+	AND	0C0H
+	OR	B
+	RET
+;
+; TXT - manda los 3 bits de A
+TXT:	LD	C,A
+TXT0:	IN	A,(PLPTST)
+	BIT	6,A		;esperar que la PC este lista
+	JR	NZ,TXT0
+	LD	A,C
+	AND	07H
+	OR	10H		;datos y strobe
+	OUT	(PLPTDAT),A
+TXT1:	IN	A,(PLPTST)
+	BIT	6,A		;la PC confirma
+	JR	Z,TXT1
+	LD	A,08H
+	OUT	(PLPTDAT),A
+	RET
+;
+; TXB - manda el byte A (destruye C, D)
+TXB:	LD	D,A
+	CALL	TXT
+	LD	A,D
+	RRCA
+	RRCA
+	RRCA
+	CALL	TXT
+	LD	A,D
+	RLCA
+	RLCA
+	AND	03H
+	JP	TXT
+;
+; ---------------- pantalla ----------------
+;
+; CLS - borra las 40 columnas del LCD
+CLS:	LD	B,0
+CLS1:	PUSH	BC
+	LD	A,B
+	CALL	COLSEL
+	LD	HL,4038H
+	LD	B,128
+CLS2:	LD	(HL),0
+	INC	HL
+	DJNZ	CLS2
+	POP	BC
+	INC	B
+	LD	A,B
+	CP	40
+	JR	NZ,CLS1
+	RET
+;
+; COLSEL - elige la columna A (0-39) del LCD en la ranura A
+COLSEL:	LD	E,DEVLCDL
+	CP	20
+	JR	C,COLS1
+	SUB	20
+	LD	E,DEVLCDR
+COLS1:	LD	D,A
+	LD	A,E
+	OUT	(PSLADV),A
+	XOR	A
+	OUT	(PSLAPG),A
+	LD	A,P2INIT AND 0F7H	;CAS bajo
+	OUT	(PMISC2),A
+	LD	A,19
+	SUB	D
+	LD	(4000H),A	;numero de columna del controlador
+	LD	A,P2INIT OR 08H	;CAS alto
+	OUT	(PMISC2),A
+	RET
+;
+; PUTC - letra A en la columna E, fila D
+PUTC:	PUSH	HL
+	PUSH	DE
+	SUB	' '
+	JR	C,PUTC0
+	CP	59		;de espacio a Z
+	JR	C,PUTC1
+PUTC0:	XOR	A
+PUTC1:	LD	L,A
+	LD	H,0
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	LD	BC,FONT
+	ADD	HL,BC
+	PUSH	HL
+	PUSH	DE
+	LD	A,E
+	CALL	COLSEL
+	POP	DE
+	LD	A,D		;fila de puntos = fila * 8
+	ADD	A,A
+	ADD	A,A
+	ADD	A,A
+	ADD	A,38H
+	LD	E,A
+	LD	D,40H
+	POP	HL
+	LD	B,8
+PUTC2:	LD	A,(HL)
+	ADD	A,A		;centrar las letras de 5 puntos
+	LD	(DE),A
+	INC	HL
+	INC	DE
+	DJNZ	PUTC2
+	POP	DE
+	POP	HL
+	RET
+;
+; PRAT - texto HL (termina en 0) desde la columna E, fila D
+PRAT:	LD	A,(HL)
+	OR	A
+	RET	Z
+	CALL	PUTC
+	INC	HL
+	INC	E
+	JR	PRAT
+;
+; ESTADO - borra la fila 8 y escribe el texto HL
+ESTADO:	PUSH	HL
+	LD	DE,0800H
+EST1:	LD	A,' '
+	CALL	PUTC
+	INC	E
+	LD	A,E
+	CP	40
+	JR	NZ,EST1
+	POP	HL
+	LD	DE,0802H
+	JR	PRAT
+;
+; ESTPAG - estado con el texto HL y el numero PAG
+ESTPAG:	CALL	ESTADO
+	INC	E
+	LD	A,(PAG)
+	LD	B,100
+	CALL	DIGITO
+	LD	B,10
+	CALL	DIGITO
+	ADD	A,'0'
+	JP	PUTC
+DIGITO:	LD	C,'0'-1
+DIG1:	INC	C
+	SUB	B
+	JR	NC,DIG1
+	ADD	A,B
+	PUSH	AF
+	LD	A,C
+	CALL	PUTC
+	INC	E
+	POP	AF
+	RET
+;
+; ---------------- textos y datos ----------------
+;
+MTIT:	DEFM	'ALTARIS 80 - INSTALADOR'
+	DEFB	0
+MAV1:	DEFM	'NO APAGUES NI DESCONECTES'
+	DEFB	0
+MAV2:	DEFM	'LA MAILSTATION'
+	DEFB	0
+MRES:	DEFM	'PARA CANCELAR: BOTON RESET'
+	DEFB	0
+MNORES:	DEFM	'NO APRETES RESET HASTA EL FIN'
+	DEFB	0
+MESP:	DEFM	'ESPERANDO A LA PC...'
+	DEFB	0
+MVOL:	DEFM	'RESPALDO: PAGINA'
+	DEFB	0
+MVOLD:	DEFM	'RESPALDO DE DATOS: PAGINA'
+	DEFB	0
+MGRAD:	DEFM	'GRABANDO DATOS: PAGINA'
+	DEFB	0
+MBOR:	DEFM	'BORRANDO DESDE LA PAGINA'
+	DEFB	0
+MREC:	DEFM	'RECIBIENDO PAGINA'
+	DEFB	0
+MGRA:	DEFM	'GRABANDO PAGINA'
+	DEFB	0
+MFIN:	DEFM	'LISTO. REINICIANDO...'
+	DEFB	0
+PAG:	DEFB	0
+DEV:	DEFB	0
+AVISO:	DEFB	0
+SUMA:	DEFW	0
+FONT:
+	INCLUDE	instfont.inc
+	END
